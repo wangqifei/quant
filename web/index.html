@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Quant Dashboard — S&P 500 / SPY</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+  <div class="layout">
+    <!-- ---------------- Market column ---------------- -->
+    <main class="market">
+      <header class="topbar">
+        <div>
+          <h1>S&amp;P 500 &amp; SPY</h1>
+          <p class="sub" id="status-line">Loading market data…</p>
+        </div>
+        <div class="topbar-actions">
+          <span class="badge" id="source-badge" hidden></span>
+          <button id="refresh" class="btn">Refresh</button>
+        </div>
+      </header>
+
+      <section class="quotes" id="quotes" aria-label="Latest quotes"></section>
+
+      <section class="panel chart-panel">
+        <div class="panel-head">
+          <h2>Price history</h2>
+          <div class="controls">
+            <div class="segmented" id="symbol-toggle" role="group" aria-label="Instrument">
+              <button data-symbol="SPX" class="active">SPX</button>
+              <button data-symbol="SPY">SPY</button>
+            </div>
+            <div class="segmented" id="range-toggle" role="group" aria-label="Range">
+              <button data-days="21">1M</button>
+              <button data-days="63">3M</button>
+              <button data-days="126">6M</button>
+              <button data-days="252" class="active">1Y</button>
+              <button data-days="0">Max</button>
+            </div>
+          </div>
+        </div>
+        <figure class="chart-wrap">
+          <svg id="chart" viewBox="0 0 900 340" preserveAspectRatio="none" role="img"
+               aria-label="Closing price history"></svg>
+          <figcaption id="chart-caption" class="chart-caption"></figcaption>
+        </figure>
+      </section>
+
+      <section class="panel">
+        <div class="panel-head"><h2>Metrics</h2></div>
+        <div class="metrics-scroll">
+          <table class="metrics" id="metrics">
+            <thead><tr><th scope="col">Metric</th><th scope="col">SPX</th><th scope="col">SPY</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <!-- ---------------- Query panel ---------------- -->
+    <aside class="sidebar" aria-label="Analysis panel">
+      <div class="segmented tabs" id="tabs" role="tablist">
+        <button data-tab="ask" class="active" role="tab" aria-selected="true">Ask</button>
+        <button data-tab="context" role="tab" aria-selected="false">Context</button>
+      </div>
+
+      <div class="tab-body" id="tab-ask">
+        <div class="thread" id="thread">
+          <div class="msg assistant">
+            <p>Ask about the price action — “how far is SPX from its 200-day?”, “what’s realized vol?”,
+               “SPY vs the index this year”. Answers are computed from the loaded snapshot.</p>
+          </div>
+        </div>
+        <div class="chips" id="chips">
+          <button>What is SPY trading at?</button>
+          <button>How far is SPX from its 200-day MA?</button>
+          <button>What is realized volatility right now?</button>
+          <button>Compare SPX and SPY year to date.</button>
+        </div>
+        <form class="composer" id="ask-form">
+          <textarea id="question" rows="2" placeholder="Ask about the price…"
+                    aria-label="Your question"></textarea>
+          <div class="composer-foot">
+            <span class="engine-note" id="engine-note"></span>
+            <button type="submit" class="btn primary" id="ask-btn">Ask</button>
+          </div>
+        </form>
+      </div>
+
+      <div class="tab-body" id="tab-context" hidden>
+        <p class="hint">Notes saved here are passed to the assistant with every question —
+           your positions, theses, constraints, anything it should know.</p>
+        <form class="composer" id="note-form">
+          <textarea id="note-text" rows="3"
+                    placeholder="e.g. Long 200 SPY at 551. Trimming above 600."
+                    aria-label="New context note"></textarea>
+          <div class="composer-foot">
+            <span class="engine-note" id="note-count"></span>
+            <button type="submit" class="btn primary">Save note</button>
+          </div>
+        </form>
+        <ul class="notes" id="notes"></ul>
+      </div>
+    </aside>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
