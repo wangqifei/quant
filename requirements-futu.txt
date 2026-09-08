@@ -1,0 +1,5 @@
+# OPTIONAL. Futu / moomoo market data via the FutuOpenD local gateway.
+# Needs a Futu/moomoo account and the FutuOpenD daemon running and logged in.
+# Pulls in pandas + numpy, so it is kept out of the core install.
+# See docs/data-sources.md for setup.
+futu-api>=9.0

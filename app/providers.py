@@ -18,6 +18,7 @@ import io
 import logging
 import math
 import random
+import socket
 import time
 from abc import ABC, abstractmethod
 from datetime import date as Date, datetime, timedelta, timezone
@@ -32,8 +33,8 @@ log = logging.getLogger(__name__)
 # Instruments the dashboard tracks. ``yahoo``/``stooq`` are the per-provider
 # ticker spellings for the same instrument.
 INSTRUMENTS: dict[str, dict[str, str]] = {
-    "SPX": {"name": "S&P 500 Index", "yahoo": "^GSPC", "stooq": "^spx"},
-    "SPY": {"name": "SPDR S&P 500 ETF", "yahoo": "SPY", "stooq": "spy.us"},
+    "SPX": {"name": "S&P 500 Index", "yahoo": "^GSPC", "stooq": "^spx", "futu": "US.SPX"},
+    "SPY": {"name": "SPDR S&P 500 ETF", "yahoo": "SPY", "stooq": "spy.us", "futu": "US.SPY"},
 }
 
 USER_AGENT = (
@@ -382,6 +383,188 @@ class DemoProvider(Provider):
         return out
 
 
+class FutuProvider(Provider):
+    """Futu / moomoo OpenAPI, via a locally running FutuOpenD gateway.
+
+    Unlike the public scrapers this is an authenticated broker feed, so it is
+    not subject to the IP throttling that makes Yahoo return 429. It does need
+    the FutuOpenD daemon running and logged in - see docs/data-sources.md.
+
+    Historical bars are quota-metered per account; ``quota()`` reports what is
+    left. Nothing here is imported at module load, so ``futu-api`` stays an
+    optional dependency.
+    """
+
+    name = "futu"
+
+    def __init__(
+        self,
+        host: str = "127.0.0.1",
+        port: int = 11111,
+        security_firm: str = "FUTUSECURITIES",
+        codes: dict[str, str] | None = None,
+        context_factory=None,
+        connect_timeout: float = 3.0,
+    ) -> None:
+        self.host = host
+        self.port = port
+        self.security_firm = security_firm
+        self.connect_timeout = connect_timeout
+        self.codes = codes or {k: v["futu"] for k, v in INSTRUMENTS.items()}
+        self._context_factory = context_factory
+        self._ctx = None
+
+    # -- connection ------------------------------------------------------
+
+    def _context(self):
+        if self._ctx is None:
+            self._ctx = (self._context_factory or self._open_context)()
+        return self._ctx
+
+    def _assert_gateway_listening(self) -> None:
+        """Fail fast if FutuOpenD is not up.
+
+        OpenQuoteContext retries a dead gateway indefinitely, which would hang
+        the dashboard and the diagnostic, so probe the port first.
+        """
+        try:
+            with socket.create_connection((self.host, self.port), timeout=self.connect_timeout):
+                return
+        except OSError as exc:
+            raise ProviderError(
+                f"nothing is listening on {self.host}:{self.port} ({exc}). "
+                "Start the FutuOpenD gateway and log in, then retry."
+            ) from exc
+
+    def _open_context(self):
+        try:
+            from futu import OpenQuoteContext, SecurityFirm
+        except ImportError as exc:  # pragma: no cover - depends on install
+            raise ProviderError(
+                "futu-api is not installed - `pip install -r requirements-futu.txt`"
+            ) from exc
+
+        self._assert_gateway_listening()
+        firm = getattr(SecurityFirm, self.security_firm, None)
+        if firm is None:
+            valid = [n for n in dir(SecurityFirm) if n.isupper()]
+            raise ProviderError(f"unknown security_firm {self.security_firm!r}; expected one of {valid}")
+        try:
+            return OpenQuoteContext(host=self.host, port=self.port, security_firm=firm)
+        except Exception as exc:  # noqa: BLE001 - surfaces as "is FutuOpenD running?"
+            raise ProviderError(
+                f"cannot reach FutuOpenD at {self.host}:{self.port} ({exc}). "
+                "Start the FutuOpenD gateway and log in first."
+            ) from exc
+
+    def close(self) -> None:
+        if self._ctx is not None:
+            try:
+                self._ctx.close()
+            except Exception:  # noqa: BLE001 - closing must never raise
+                pass
+            self._ctx = None
+
+    # -- queries ---------------------------------------------------------
+
+    def quota(self) -> tuple[int, int]:
+        """``(used, remaining)`` historical-K-line quota for this account."""
+        ret, data = _futu_unpack(self._context().get_history_kl_quota(get_detail=False))
+        used, remaining = data[0], data[1]
+        return used, remaining
+
+    def fetch(self, key: str, lookback_days: int) -> Series:
+        code = self.codes.get(key) or INSTRUMENTS[key]["futu"]
+        end = Date.today()
+        start = end - timedelta(days=lookback_days)
+        rows = self._paged_kline(code, start.isoformat(), end.isoformat())
+        bars = _bars_from_futu_rows(rows)
+        if not bars:
+            raise ProviderError(f"no bars returned for {code}")
+        prev_close = rows[-1].get("last_close") if rows else None
+        return Series(
+            quote=_quote_from_bars(
+                key, bars, self.name, previous_close=_as_float(prev_close)
+            ),
+            bars=bars,
+        )
+
+    def _paged_kline(self, code: str, start: str, end: str) -> list[dict]:
+        # Open the context first: it raises the actionable "futu-api is not
+        # installed" / "is FutuOpenD running?" error before this import can
+        # surface a bare ModuleNotFoundError.
+        ctx = self._context()
+        from futu import AuType, KLType
+
+        rows: list[dict] = []
+        page_key = None
+        for _ in range(20):  # bounded: 20 x 1000 bars is far more than we ask for
+            ret, frame, page_key = _futu_unpack_kline(
+                ctx.request_history_kline(
+                    code,
+                    start=start,
+                    end=end,
+                    ktype=KLType.K_DAY,
+                    autype=AuType.QFQ,
+                    max_count=1000,
+                    page_req_key=page_key,
+                )
+            )
+            rows.extend(frame)
+            if not page_key:
+                break
+        return rows
+
+
+def _futu_unpack(result):
+    """Futu returns ``(ret, data)`` where data is an error string on failure."""
+    ret, data = result
+    if ret != 0:  # futu.RET_OK
+        raise ProviderError(str(data))
+    return ret, data
+
+
+def _futu_unpack_kline(result) -> tuple[int, list[dict], object]:
+    ret, data, page_key = result
+    if ret != 0:
+        raise ProviderError(str(data))
+    rows = data.to_dict("records") if hasattr(data, "to_dict") else list(data)
+    return ret, rows, page_key
+
+
+def _bars_from_futu_rows(rows: list[dict]) -> list[Bar]:
+    bars: list[Bar] = []
+    for row in rows:
+        close = _as_float(row.get("close"))
+        stamp = str(row.get("time_key") or "")[:10]
+        if close is None or not stamp:
+            continue
+        try:
+            day = Date.fromisoformat(stamp)
+        except ValueError:
+            continue
+        bars.append(
+            Bar(
+                date=day,
+                open=_as_float(row.get("open")) or close,
+                high=_as_float(row.get("high")) or close,
+                low=_as_float(row.get("low")) or close,
+                close=close,
+                volume=int(_as_float(row.get("volume")) or 0),
+            )
+        )
+    bars.sort(key=lambda b: b.date)
+    return bars
+
+
+def _as_float(value) -> float | None:
+    try:
+        result = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if result != result else result  # reject NaN
+
+
 def _session_dates(lookback_days: int) -> list[Date]:
     """Weekday dates ending today, spanning ``lookback_days`` calendar days."""
     today = Date.today()
@@ -405,5 +588,24 @@ def _at(seq, index: int, default=None):
 
 def build_providers(names: list[str]) -> list[Provider]:
     """Instantiate providers in priority order, ignoring unknown names."""
-    registry = {"yahoo": YahooProvider, "stooq": StooqProvider, "demo": DemoProvider}
-    return [registry[n]() for n in names if n in registry]
+    registry = {
+        "yahoo": YahooProvider,
+        "stooq": StooqProvider,
+        "futu": FutuProvider,
+        "demo": DemoProvider,
+    }
+    return [_build(registry[n]) for n in names if n in registry]
+
+
+def _build(cls: type[Provider]) -> Provider:
+    """Instantiate a provider, wiring in any settings it needs."""
+    if cls is FutuProvider:
+        from .config import settings
+
+        return FutuProvider(
+            host=settings.futu_host,
+            port=settings.futu_port,
+            security_firm=settings.futu_security_firm,
+            codes=settings.futu_codes,
+        )
+    return cls()

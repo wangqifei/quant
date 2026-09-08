@@ -13,7 +13,7 @@ import sys
 import time
 
 from .config import settings
-from .providers import INSTRUMENTS, Provider, ProviderError, build_providers
+from .providers import INSTRUMENTS, FutuProvider, Provider, ProviderError, build_providers
 
 OK, FAIL = "  OK  ", " FAIL "
 
@@ -35,6 +35,43 @@ def check(provider: Provider, key: str, lookback_days: int) -> tuple[bool, str]:
     )
 
 
+def list_futu_codes() -> int:
+    """Print the US index codes the connected Futu account can see.
+
+    Futu's code for the S&P 500 index is not documented in the SDK, so this
+    asks the gateway directly rather than guessing.
+    """
+    provider = FutuProvider(
+        host=settings.futu_host,
+        port=settings.futu_port,
+        security_firm=settings.futu_security_firm,
+    )
+    try:
+        from futu import Market, SecurityType
+    except ImportError:
+        print("futu-api is not installed - pip install -r requirements-futu.txt", file=sys.stderr)
+        return 2
+    try:
+        ctx = provider._context()
+        ret, data = ctx.get_stock_basicinfo(Market.US, SecurityType.IDX)
+    except ProviderError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    finally:
+        provider.close()
+
+    if ret != 0:
+        print(f"Futu returned an error: {data}", file=sys.stderr)
+        return 2
+
+    rows = data.to_dict("records") if hasattr(data, "to_dict") else list(data)
+    print(f"{len(rows)} US index codes available:\n")
+    for row in rows:
+        print(f"  {str(row.get('code','')):16} {row.get('name','')}")
+    print("\nSet the S&P 500 one with:  export FUTU_CODE_SPX=<code>")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Check each market data provider.")
     parser.add_argument("--verbose", "-v", action="store_true", help="show debug logging")
@@ -42,12 +79,20 @@ def main(argv: list[str] | None = None) -> int:
         "--providers",
         help="comma-separated provider names to test (default: the configured chain)",
     )
+    parser.add_argument(
+        "--futu-codes",
+        action="store_true",
+        help="list the US index codes your Futu account exposes, then exit",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
         level=logging.DEBUG if args.verbose else logging.WARNING,
         format="%(levelname)s %(name)s: %(message)s",
     )
+
+    if args.futu_codes:
+        return list_futu_codes()
 
     names = [p.strip() for p in args.providers.split(",")] if args.providers else settings.providers
     providers = build_providers(names)
@@ -65,6 +110,12 @@ def main(argv: list[str] | None = None) -> int:
             ok, detail = check(provider, key, settings.lookback_days)
             provider_ok &= ok
             print(f"  [{OK if ok else FAIL}] {key:4} {detail}")
+        if isinstance(provider, FutuProvider) and provider_ok:
+            try:
+                used, remaining = provider.quota()
+                print(f"  history quota: {used} used, {remaining} remaining")
+            except Exception as exc:  # noqa: BLE001
+                print(f"  history quota: unavailable ({exc})")
         if provider_ok and provider.name != "demo":
             working.append(provider.name)
         if hasattr(provider, "close"):

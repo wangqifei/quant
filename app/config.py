@@ -31,6 +31,20 @@ class Settings:
     cache_ttl_seconds: int = _int("QUANT_CACHE_TTL", 60)
     context_path: Path = ROOT / "data" / "context.json"
 
+    # Futu / moomoo OpenAPI (used only when "futu" is in the provider chain).
+    # Requires the FutuOpenD gateway running locally and logged in.
+    futu_host: str = os.environ.get("FUTU_HOST", "127.0.0.1")
+    futu_port: int = _int("FUTU_PORT", 11111)
+    futu_security_firm: str = os.environ.get("FUTU_SECURITY_FIRM", "FUTUSECURITIES")
+    # Futu's own ticker spellings. Override if your account uses different
+    # index codes - `python -m app.diagnose --futu-codes` lists what it offers.
+    futu_codes: dict[str, str] = field(
+        default_factory=lambda: {
+            "SPX": os.environ.get("FUTU_CODE_SPX", "US.SPX"),
+            "SPY": os.environ.get("FUTU_CODE_SPY", "US.SPY"),
+        }
+    )
+
     # Assistant
     anthropic_model: str = os.environ.get("ANTHROPIC_MODEL", "claude-opus-5")
     anthropic_max_tokens: int = _int("ANTHROPIC_MAX_TOKENS", 16000)

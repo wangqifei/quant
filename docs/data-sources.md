@@ -1,7 +1,7 @@
 # Market data sources
 
-Findings from evaluating Yahoo Finance, Stooq and Futu/moomoo as the price
-feed for this project, and why the current chain is what it is.
+Findings from evaluating Yahoo, Stooq, Futu/moomoo, tushare, akshare and
+yfinance as the price feed for this project, and why the chain is what it is.
 
 ## Current chain
 
@@ -48,65 +48,97 @@ account, and covers `^spx` and `spy.us`. Good enough to keep the dashboard
 populated when Yahoo is throttling. It serves an HTML page instead of CSV when
 rate-limited, which the parser detects and rejects.
 
-## Futu / moomoo — evaluated, not adopted (yet)
+## Futu / moomoo — supported (`futu` provider)
 
-Futu Holdings operates both brands: **moomoo** internationally, **Futu
-Niuniu** in HK/CN. They share one OpenAPI.
+Futu Holdings runs both brands: **moomoo** internationally, **Futu Niuniu** in
+HK/CN. One shared OpenAPI. **A personal account is enough.**
 
-Verified against `futu-api` 10.10.7008 from PyPI:
+This is the recommended fix if the public endpoints are throttling you: it is
+an *authenticated broker feed reached over localhost*, so it is not subject to
+the IP-based rate limiting that makes Yahoo return 429.
 
-- **Architecture is a local gateway, not a REST API.** You run **FutuOpenD**
-  (a desktop daemon) which holds the authenticated session; your code talks to
-  it over `127.0.0.1:11111`. Confirmed from the SDK:
-  `OpenQuoteContext(host='127.0.0.1', port=11111, ..., security_firm=SecurityFirm.NONE)`.
-  There is no keys-only, serverless path — the daemon must be running.
-- **Account required**, and `security_firm` must match your broker entity
-  (`FUTUSECURITIES` / `FUTUINC` / `FUTUSG`).
-- **Historical bars are metered.** `request_history_kline(code, start, end,
-  ktype=KLType.K_DAY, autype=AuType.QFQ, max_count=1000, page_req_key=...)`
-  returns a paginated pandas DataFrame, and the SDK ships
-  `get_history_kl_quota()` specifically to report used/remaining quota.
-  Quota depends on your account tier and market-data entitlements.
-- **Realtime needs a subscription**: `subscribe(code_list, subtype_list)` then
-  `get_stock_quote(...)` / `get_cur_kline(...)`. US realtime generally requires
-  paid market data or qualifying assets/activity.
-- **Symbol format** is `MARKET.CODE` — `US.SPY`, `HK.00700`, `SH.000001`.
-- **Dependency footprint**: pandas, numpy, protobuf, pycryptodome, simplejson.
+Verified against `futu-api` 10.10.7008:
 
-### When Futu becomes the right call
+- **Local gateway, not a REST API.** You run **FutuOpenD**, which holds the
+  session; your code talks to it on `127.0.0.1:11111`. There is no
+  keys-only/serverless path — the daemon must be running.
+- **Historical bars are quota-metered.** `get_history_kl_quota()` reports
+  used/remaining; `app.diagnose` prints it after a successful check.
+- **Symbols** are `MARKET.CODE` (`US.SPY`). The SDK documents no US *index*
+  code, so `FUTU_CODE_SPX` defaults to `US.SPX` and is overridable —
+  `python -m app.diagnose --futu-codes` asks your gateway what it actually
+  offers, rather than guessing.
+- **Bar fields**: `time_key, open, close, high, low, volume, last_close`.
 
-Not for daily-bar research — Yahoo is simpler and unmetered, and the quota
-would work against backtesting, which re-reads history constantly.
-
-It becomes clearly worth it when you want:
-
-- intraday or L2/order-book depth,
-- data consistent with the broker you actually trade through, or
-- **order execution from the same API** (`OpenSecTradeContext`), so signal and
-  execution share one session.
-
-That last point is the real argument: it collapses the research-to-execution
-gap into one integration. When the project reaches live order placement, a
-`FutuProvider` alongside the existing chain is the natural step — the
-`Provider` interface already accommodates it, and `futu-api` would go in an
-optional requirements file so the core install stays light.
-
-### If you want to try it manually
+### Setup
 
 1. Download and run **FutuOpenD**, log in with your Futu/moomoo credentials.
-2. `pip install futu-api`
-3. ```python
-   from futu import OpenQuoteContext, KLType, AuType
+2. `pip install -r requirements-futu.txt`
+3. `export QUANT_PROVIDERS=futu,yahoo,stooq,demo`
+4. `python -m app.diagnose` — confirms the connection and prints your quota.
 
-   ctx = OpenQuoteContext(host="127.0.0.1", port=11111)
-   print(ctx.get_history_kl_quota(get_detail=True))
-   ret, data, page = ctx.request_history_kline(
-       "US.SPY", start="2025-01-01", end="2025-12-31",
-       ktype=KLType.K_DAY, autype=AuType.QFQ, max_count=1000,
-   )
-   print(ret, data.head() if ret == 0 else data)
-   ctx.close()
-   ```
+If the S&P 500 index fails but SPY works, your account uses a different index
+code: run `python -m app.diagnose --futu-codes` and
+`export FUTU_CODE_SPX=<code>`.
 
-Check the quota call first — it tells you how much history you can pull before
-you design anything around it.
+Settings: `FUTU_HOST`, `FUTU_PORT`, `FUTU_SECURITY_FIRM`
+(`FUTUSECURITIES` / `FUTUINC` / `FUTUSG` — must match your broker entity),
+`FUTU_CODE_SPX`, `FUTU_CODE_SPY`.
+
+The provider probes the TCP port before constructing the SDK context, because
+`OpenQuoteContext` retries a dead gateway indefinitely and would otherwise
+hang the dashboard.
+
+## Other sources evaluated
+
+### tushare — wrong tool for US markets
+
+`tushare` 1.4.29's Pro client is a **generic dispatcher**: `__getattr__`
+forwards any method name to `POST api.waditu.com/dataapi`, so the package
+itself declares no endpoints and coverage is decided server-side by your
+token's points (积分) balance. The bundled modules are China-focused (shibor,
+A-share billboard/fundamentals, domestic macro).
+
+It is a good source **for A-shares**, which this project does not track. For
+SPX/SPY it is the wrong tool. Requires `ts.set_token(...)` and enough points
+for whichever endpoint you call. *Not verified against the live API — the
+host is unreachable from the dev sandbox.*
+
+### akshare — viable, but Python 3.11+
+
+`akshare` 1.18.94 needs **no token** and does carry US data on infrastructure
+completely independent of Yahoo (Sina / EastMoney):
+
+- `index_us_stock_sina(symbol=".INX")` — the S&P 500 index
+- `stock_us_daily(symbol="SPY")` — US daily bars
+
+Two catches: it declares `Requires-Python: >=3.11`, and the Sina index feed
+returns a JS-obfuscated blob that needs `py_mini_racer` (a JS engine) to
+decode. Worth revisiting as a no-account fallback if you move to 3.11+.
+
+### yfinance — the no-account answer to Yahoo 429
+
+`yfinance` 1.7.0 does two things a plain HTTP client cannot: it mints Yahoo's
+cookie/crumb pair, and uses **`curl_cffi` to impersonate a browser TLS
+fingerprint**. If Yahoo is throttling by fingerprint, this defeats it; if the
+block is purely per-IP, it will not. Costs ~12 transitive dependencies
+(pandas, numpy, curl_cffi, peewee, lxml, bs4, websockets).
+
+### Key-based APIs (not evaluated in depth)
+
+Alpha Vantage, Finnhub, Twelve Data, Polygon, Tiingo and FRED all offer free
+tiers covering US equities, and none is subject to Yahoo's throttling. FRED in
+particular publishes a daily S&P 500 close series and is extremely reliable,
+though it carries the close only — no OHLC, and no SPY. Their free-tier limits
+change often, so check current terms before depending on one; they were not
+reachable from the dev sandbox to verify.
+
+## Recommendation
+
+| Situation | Use |
+|---|---|
+| Yahoo works | `yahoo,stooq,demo` (the default) |
+| Yahoo returns 429 and you have a Futu/moomoo account | **`futu,yahoo,stooq,demo`** |
+| Yahoo returns 429, no broker account | Try `yfinance`; otherwise a key-based API |
+| A-shares later | `tushare` or `akshare` |
+| No network at all | `demo` |

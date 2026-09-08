@@ -101,11 +101,29 @@ python -m app.diagnose          # add -v for debug logging
 It tries every provider against both instruments and prints the price, bar
 count and latency on success, or the exact error on failure.
 
+**If Yahoo returns `HTTP 429`** it is throttling your IP, and no amount of
+retrying will help. Use a Futu/moomoo account instead — an authenticated
+broker feed is not rate-limited the way the public endpoints are:
+
+```bash
+pip install -r requirements-futu.txt
+# start FutuOpenD and log in, then:
+export QUANT_PROVIDERS=futu,yahoo,stooq,demo
+python -m app.diagnose               # confirms the link and prints your quota
+```
+
+`docs/data-sources.md` covers setup, the index-code lookup
+(`python -m app.diagnose --futu-codes`) and the alternatives
+(yfinance, akshare, tushare, key-based APIs).
+
 ## Configuration
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `QUANT_PROVIDERS` | `yahoo,stooq,demo` | Provider chain, in priority order |
+| `QUANT_PROVIDERS` | `yahoo,stooq,demo` | Provider chain, in priority order (`futu` also available) |
+| `FUTU_HOST` / `FUTU_PORT` | `127.0.0.1` / `11111` | FutuOpenD gateway address |
+| `FUTU_SECURITY_FIRM` | `FUTUSECURITIES` | `FUTUSECURITIES`, `FUTUINC` or `FUTUSG` |
+| `FUTU_CODE_SPX` / `FUTU_CODE_SPY` | `US.SPX` / `US.SPY` | Futu ticker spellings |
 | `QUANT_LOOKBACK_DAYS` | `420` | Calendar days of history to request |
 | `QUANT_CACHE_TTL` | `60` | Seconds before a symbol is refetched |
 | `ANTHROPIC_API_KEY` | — | Enables the Claude engine |
