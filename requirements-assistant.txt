@@ -1,0 +1,4 @@
+# OPTIONAL. Only needed for Claude-powered free-form answers in the query panel.
+# Without it the panel uses the built-in local metrics engine, which needs no
+# key and no network. Requires Python 3.10 or newer.
+anthropic>=1.3.0

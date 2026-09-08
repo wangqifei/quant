@@ -7,20 +7,34 @@ action or record context the analysis should take into account.
 
 ![layout](docs/layout.png)
 
+## Requirements
+
+**Python 3.10 or newer.** Check with `python3 --version`.
+
 ## Quick start
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 ./run.sh                      # → http://127.0.0.1:8000
 ```
 
-Optional — free-form analysis in the query panel:
+That is the whole install. The dashboard and the query panel both work with
+nothing else — no API key, no account.
+
+### Optional: Claude-powered answers
+
+The query panel ships with a built-in engine that answers from the computed
+metrics. To also allow free-form questions, install the optional dependency
+and set a key:
 
 ```bash
+pip install -r requirements-assistant.txt   # needs Python 3.10+
 export ANTHROPIC_API_KEY=sk-ant-...
 ./run.sh
 ```
+
+Skip this and everything still runs; the panel just stays on the local engine.
 
 ## What's on screen
 
@@ -116,6 +130,9 @@ tests/           pytest suite
 pip install -r requirements-dev.txt
 python -m pytest -q
 ```
+
+Without the optional `anthropic` package installed, the two tests that exercise
+the Claude client skip and the rest still run.
 
 Coverage includes the metric maths against hand-computed values, provider
 parsing from captured payload fixtures (including Yahoo's null-padded holiday
