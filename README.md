@@ -74,8 +74,10 @@ each number is unit-testable and reproducible.
 
 Tried in order; the first that returns usable data wins.
 
-1. **Yahoo Finance** (`query1.finance.yahoo.com/v8/finance/chart`) — intraday
-   accurate, no API key.
+1. **Yahoo Finance** (`query{1,2}.finance.yahoo.com/v8/finance/chart`) —
+   intraday accurate, no API key. Hardened against Yahoo's bot defences:
+   persistent session, cookie/crumb minting, browser headers, host
+   alternation and exponential backoff on throttling.
 2. **Stooq** (daily CSV) — end-of-day fallback, no API key.
 3. **Demo** — a seeded synthetic random walk so the app runs fully offline.
    SPY is derived from the index series so the two stay coherent. The UI
@@ -83,6 +85,21 @@ Tried in order; the first that returns usable data wins.
 
 Neither live source is an official market feed. Treat the data as indicative,
 not as a system of record.
+
+See **[docs/data-sources.md](docs/data-sources.md)** for the full evaluation,
+including why Futu/moomoo is not wired in yet and what would justify it.
+
+### Diagnosing the data feed
+
+If the dashboard shows the amber **DEMO DATA** badge, both live providers
+failed. To see which one and why:
+
+```bash
+python -m app.diagnose          # add -v for debug logging
+```
+
+It tries every provider against both instruments and prints the price, bar
+count and latency on success, or the exact error on failure.
 
 ## Configuration
 
@@ -120,6 +137,7 @@ app/
   market.py      provider fallback, caching, snapshot assembly
   assistant.py   context store, local engine, Claude engine
   main.py        FastAPI routes + static hosting
+  diagnose.py    `python -m app.diagnose` provider connectivity check
 web/             dashboard (no build step, no external JS)
 tests/           pytest suite
 ```

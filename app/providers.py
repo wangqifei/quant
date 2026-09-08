@@ -2,7 +2,9 @@
 
 Two live sources are supported, neither of which needs an API key:
 
-* ``YahooProvider``  - the Yahoo Finance chart endpoint (primary).
+* ``YahooProvider``  - the Yahoo Finance chart endpoint (primary). Mints a
+  cookie/crumb pair, sends browser-like headers, alternates between the
+  query1/query2 hosts and backs off on throttling.
 * ``StooqProvider``  - Stooq daily CSV (fallback, end-of-day only).
 
 ``DemoProvider`` produces a deterministic synthetic series so the UI and the
@@ -13,14 +15,19 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 import math
 import random
+import time
 from abc import ABC, abstractmethod
 from datetime import date as Date, datetime, timedelta, timezone
+from urllib.parse import quote
 
 import httpx
 
 from .models import Bar, Quote, Series
+
+log = logging.getLogger(__name__)
 
 # Instruments the dashboard tracks. ``yahoo``/``stooq`` are the per-provider
 # ticker spellings for the same instrument.
@@ -33,6 +40,19 @@ USER_AGENT = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 )
+
+# Yahoo rejects requests that do not look like they came from a browser, so
+# send the same header set a real page load would.
+BROWSER_HEADERS = {
+    "User-Agent": USER_AGENT,
+    "Accept": "application/json,text/plain,*/*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Origin": "https://finance.yahoo.com",
+    "Referer": "https://finance.yahoo.com/",
+    "Connection": "keep-alive",
+}
+
+RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 
 
 class ProviderError(RuntimeError):
@@ -76,30 +96,129 @@ def _quote_from_bars(key: str, bars: list[Bar], source: str, **overrides) -> Quo
 
 
 class YahooProvider(Provider):
-    """Yahoo Finance ``/v8/finance/chart`` - intraday-accurate, no API key."""
+    """Yahoo Finance ``/v8/finance/chart`` - intraday-accurate, no API key.
+
+    Yahoo throttles and blocks requests that do not look like a browser, so
+    this provider:
+
+    * reuses one :class:`httpx.Client` so the session cookie persists,
+    * mints a cookie/crumb pair once and re-mints it if a request is rejected,
+    * alternates between the ``query1``/``query2`` hosts across attempts, and
+    * backs off exponentially on throttling and server errors.
+
+    A non-retryable status (a bad symbol, say) fails immediately rather than
+    burning the retry budget.
+    """
 
     name = "yahoo"
-    BASE = "https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+    HOSTS = ("query1.finance.yahoo.com", "query2.finance.yahoo.com")
+    CHART_PATH = "/v8/finance/chart/{symbol}"
+    CRUMB_URL = "https://query1.finance.yahoo.com/v1/test/getcrumb"
+    COOKIE_URL = "https://fc.yahoo.com/"
 
-    def __init__(self, timeout: float = 10.0) -> None:
+    def __init__(
+        self,
+        timeout: float = 10.0,
+        client: httpx.Client | None = None,
+        max_attempts: int = 3,
+        retry_delay: float = 0.5,
+    ) -> None:
         self.timeout = timeout
+        self.max_attempts = max_attempts
+        self.retry_delay = retry_delay
+        self._client = client
+        self._owns_client = client is None
+        # None = not yet attempted; "" = attempted and unavailable.
+        self._crumb: str | None = None
+
+    # -- session ---------------------------------------------------------
+
+    @property
+    def client(self) -> httpx.Client:
+        if self._client is None:
+            self._client = httpx.Client(
+                headers=BROWSER_HEADERS, timeout=self.timeout, follow_redirects=True
+            )
+        return self._client
+
+    def close(self) -> None:
+        if self._client is not None and self._owns_client:
+            self._client.close()
+            self._client = None
+
+    def _crumb_value(self) -> str | None:
+        """The cached crumb, minting one on first use."""
+        if self._crumb is None:
+            self._crumb = self._mint_crumb() or ""
+        return self._crumb or None
+
+    def _mint_crumb(self) -> str:
+        """Seed the session cookie, then exchange it for a crumb.
+
+        Best-effort: the chart endpoint often works without a crumb, so a
+        failure here is logged and ignored rather than raised.
+        """
+        try:
+            self.client.get(self.COOKIE_URL)  # sets A1/A3; a 404 still sets them
+        except httpx.HTTPError as exc:
+            log.debug("yahoo cookie bootstrap failed: %s", exc)
+        try:
+            resp = self.client.get(self.CRUMB_URL)
+        except httpx.HTTPError as exc:
+            log.debug("yahoo crumb request failed: %s", exc)
+            return ""
+        crumb = resp.text.strip() if resp.status_code == 200 else ""
+        # An HTML body means we were served an error/consent page, not a crumb.
+        if not crumb or "<" in crumb or len(crumb) > 64:
+            return ""
+        return crumb
+
+    # -- fetching --------------------------------------------------------
 
     def fetch(self, key: str, lookback_days: int) -> Series:
         symbol = INSTRUMENTS[key]["yahoo"]
         params = {"range": _yahoo_range(lookback_days), "interval": "1d"}
-        try:
-            resp = httpx.get(
-                self.BASE.format(symbol=symbol),
-                params=params,
-                timeout=self.timeout,
-                headers={"User-Agent": USER_AGENT},
-                follow_redirects=True,
-            )
-            resp.raise_for_status()
-            payload = resp.json()
-        except (httpx.HTTPError, ValueError) as exc:
-            raise ProviderError(f"request failed for {symbol}: {exc}") from exc
-        return self._parse(key, payload)
+        return self._parse(key, self._get_chart(symbol, params))
+
+    def _get_chart(self, symbol: str, params: dict[str, str]) -> dict:
+        errors: list[str] = []
+        delay = self.retry_delay
+
+        for attempt in range(self.max_attempts):
+            host = self.HOSTS[attempt % len(self.HOSTS)]
+            retryable = True
+            try:
+                resp = self._request(host, symbol, params)
+            except httpx.HTTPError as exc:
+                errors.append(f"{host}: {type(exc).__name__}: {exc}")
+            else:
+                if resp.status_code == 200:
+                    try:
+                        return resp.json()
+                    except ValueError as exc:
+                        errors.append(f"{host}: malformed JSON: {exc}")
+                else:
+                    errors.append(f"{host}: HTTP {resp.status_code}")
+                    if resp.status_code in (401, 403):
+                        self._crumb = None  # stale crumb: re-mint next attempt
+                    elif resp.status_code not in RETRYABLE_STATUS:
+                        retryable = False
+
+            if not retryable:
+                break
+            if attempt < self.max_attempts - 1 and delay:
+                time.sleep(delay)
+                delay *= 2
+
+        raise ProviderError(f"chart request failed for {symbol} ({'; '.join(errors)})")
+
+    def _request(self, host: str, symbol: str, params: dict[str, str]) -> httpx.Response:
+        query = dict(params)
+        crumb = self._crumb_value()
+        if crumb:
+            query["crumb"] = crumb
+        url = f"https://{host}{self.CHART_PATH.format(symbol=quote(symbol, safe=''))}"
+        return self.client.get(url, params=query)
 
     def _parse(self, key: str, payload: dict) -> Series:
         chart = payload.get("chart") or {}
