@@ -31,6 +31,11 @@ class Settings:
     cache_ttl_seconds: int = _int("QUANT_CACHE_TTL", 60)
     context_path: Path = ROOT / "data" / "context.json"
 
+    # Yahoo transport. "auto" uses curl_cffi's browser TLS impersonation when
+    # installed (needed when Yahoo 429s a plain client), "off" forces httpx,
+    # or name a curl_cffi target such as "chrome" / "safari".
+    yahoo_impersonate: str = os.environ.get("YAHOO_IMPERSONATE", "auto")
+
     # Futu / moomoo OpenAPI (used only when "futu" is in the provider chain).
     # Requires the FutuOpenD gateway running locally and logged in.
     futu_host: str = os.environ.get("FUTU_HOST", "127.0.0.1")

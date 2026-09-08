@@ -55,6 +55,48 @@ BROWSER_HEADERS = {
 
 RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 
+# Yahoo also fingerprints the TLS handshake, which no pure-Python client can
+# disguise. curl_cffi speaks with a real browser's fingerprint; it is optional,
+# and its absence just means we fall back to httpx.
+DEFAULT_IMPERSONATE = "chrome"
+
+try:  # pragma: no cover - depends on whether the extra is installed
+    from curl_cffi.requests.exceptions import RequestException as _CurlError
+
+    TRANSPORT_ERRORS: tuple[type[BaseException], ...] = (httpx.HTTPError, _CurlError)
+    HAVE_CURL_CFFI = True
+except ImportError:  # pragma: no cover
+    TRANSPORT_ERRORS = (httpx.HTTPError,)
+    HAVE_CURL_CFFI = False
+
+
+def make_yahoo_session(impersonate: str = "auto", timeout: float = 10.0):
+    """Build the HTTP session Yahoo requests go through.
+
+    ``impersonate`` is ``"auto"`` (use curl_cffi when installed), ``"off"``
+    (always httpx), or a curl_cffi browser target such as ``"chrome"``.
+    Returns ``(session, description)``.
+    """
+    if impersonate != "off":
+        try:
+            from curl_cffi import requests as curl_requests
+        except ImportError:
+            if impersonate != "auto":
+                raise ProviderError(
+                    f"impersonate={impersonate!r} needs curl_cffi - "
+                    "`pip install -r requirements-yahoo.txt` (Python 3.10+)"
+                ) from None
+        else:
+            target = DEFAULT_IMPERSONATE if impersonate == "auto" else impersonate
+            # No custom headers: impersonation supplies a browser-consistent set,
+            # and overriding pieces of it weakens the disguise.
+            return curl_requests.Session(impersonate=target), f"curl_cffi/{target}"
+
+    return (
+        httpx.Client(headers=BROWSER_HEADERS, timeout=timeout, follow_redirects=True),
+        "httpx",
+    )
+
 
 class ProviderError(RuntimeError):
     """Raised when a provider cannot produce usable data."""
@@ -120,26 +162,27 @@ class YahooProvider(Provider):
     def __init__(
         self,
         timeout: float = 10.0,
-        client: httpx.Client | None = None,
+        client=None,
         max_attempts: int = 3,
         retry_delay: float = 0.5,
+        impersonate: str = "auto",
     ) -> None:
         self.timeout = timeout
         self.max_attempts = max_attempts
         self.retry_delay = retry_delay
+        self.impersonate = impersonate
         self._client = client
         self._owns_client = client is None
+        self.transport = "injected" if client is not None else "?"
         # None = not yet attempted; "" = attempted and unavailable.
         self._crumb: str | None = None
 
     # -- session ---------------------------------------------------------
 
     @property
-    def client(self) -> httpx.Client:
+    def client(self):
         if self._client is None:
-            self._client = httpx.Client(
-                headers=BROWSER_HEADERS, timeout=self.timeout, follow_redirects=True
-            )
+            self._client, self.transport = make_yahoo_session(self.impersonate, self.timeout)
         return self._client
 
     def close(self) -> None:
@@ -161,11 +204,11 @@ class YahooProvider(Provider):
         """
         try:
             self.client.get(self.COOKIE_URL)  # sets A1/A3; a 404 still sets them
-        except httpx.HTTPError as exc:
+        except TRANSPORT_ERRORS as exc:
             log.debug("yahoo cookie bootstrap failed: %s", exc)
         try:
             resp = self.client.get(self.CRUMB_URL)
-        except httpx.HTTPError as exc:
+        except TRANSPORT_ERRORS as exc:
             log.debug("yahoo crumb request failed: %s", exc)
             return ""
         crumb = resp.text.strip() if resp.status_code == 200 else ""
@@ -190,7 +233,7 @@ class YahooProvider(Provider):
             retryable = True
             try:
                 resp = self._request(host, symbol, params)
-            except httpx.HTTPError as exc:
+            except TRANSPORT_ERRORS as exc:
                 errors.append(f"{host}: {type(exc).__name__}: {exc}")
             else:
                 if resp.status_code == 200:
@@ -211,9 +254,11 @@ class YahooProvider(Provider):
                 time.sleep(delay)
                 delay *= 2
 
-        raise ProviderError(f"chart request failed for {symbol} ({'; '.join(errors)})")
+        raise ProviderError(
+            f"chart request failed for {symbol} via {self.transport} ({'; '.join(errors)})"
+        )
 
-    def _request(self, host: str, symbol: str, params: dict[str, str]) -> httpx.Response:
+    def _request(self, host: str, symbol: str, params: dict[str, str]):
         query = dict(params)
         crumb = self._crumb_value()
         if crumb:
@@ -321,7 +366,10 @@ class StooqProvider(Provider):
             except (KeyError, ValueError, TypeError):
                 continue  # Stooq emits an HTML error page when throttled
         if not bars:
-            raise ProviderError(f"no usable rows for {key}")
+            # Stooq answers 200 with an HTML page or a plain-text limit notice
+            # when it throttles, so show what actually arrived.
+            preview = " ".join(text.split())[:120] or "(empty response)"
+            raise ProviderError(f"no usable rows for {key}; response began: {preview!r}")
         bars.sort(key=lambda b: b.date)
         cutoff = bars[-1].date - timedelta(days=lookback_days)
         bars = [b for b in bars if b.date >= cutoff] or bars[-2:]
@@ -599,6 +647,10 @@ def build_providers(names: list[str]) -> list[Provider]:
 
 def _build(cls: type[Provider]) -> Provider:
     """Instantiate a provider, wiring in any settings it needs."""
+    if cls is YahooProvider:
+        from .config import settings
+
+        return YahooProvider(impersonate=settings.yahoo_impersonate)
     if cls is FutuProvider:
         from .config import settings
 

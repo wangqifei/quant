@@ -13,7 +13,16 @@ import sys
 import time
 
 from .config import settings
-from .providers import INSTRUMENTS, FutuProvider, Provider, ProviderError, build_providers
+from .providers import (
+    HAVE_CURL_CFFI,
+    INSTRUMENTS,
+    TRANSPORT_ERRORS,
+    FutuProvider,
+    Provider,
+    ProviderError,
+    YahooProvider,
+    build_providers,
+)
 
 OK, FAIL = "  OK  ", " FAIL "
 
@@ -33,6 +42,83 @@ def check(provider: Provider, key: str, lookback_days: int) -> tuple[bool, str]:
         f"{quote.price:,.2f} ({quote.change_pct:+.2f}%) as of {quote.as_of} "
         f"| {len(series.bars)} bars | {elapsed:.0f} ms"
     )
+
+
+def environment() -> str:
+    """The facts needed to interpret everything below."""
+    import platform
+
+    optional = []
+    for module, label in (("curl_cffi", "curl_cffi"), ("futu", "futu-api"), ("anthropic", "anthropic")):
+        try:
+            __import__(module)
+            optional.append(f"{label} yes")
+        except ImportError:
+            optional.append(f"{label} NO")
+    return (
+        f"Python {platform.python_version()} on {platform.system()} {platform.machine()}\n"
+        f"Optional packages: {', '.join(optional)}"
+    )
+
+
+def probe_yahoo() -> int:
+    """Walk Yahoo's handshake one step at a time and report each status.
+
+    The chain check only says "429". This says which request got the 429,
+    what Yahoo sent back, and whether TLS impersonation is in play - which is
+    what distinguishes a throttled IP from a recognisable client.
+    """
+    print(environment(), "\n")
+
+    provider = YahooProvider(impersonate=settings.yahoo_impersonate)
+    session = provider.client
+    print(f"Transport: {provider.transport}")
+    if not HAVE_CURL_CFFI:
+        print("  curl_cffi is NOT installed - requests carry a Python TLS fingerprint,")
+        print("  which Yahoo throttles. `pip install -r requirements-yahoo.txt` (needs 3.10+).")
+    print()
+
+    steps = [
+        ("cookie   ", YahooProvider.COOKIE_URL, None),
+        ("crumb    ", YahooProvider.CRUMB_URL, None),
+        ("chart SPY", f"https://{YahooProvider.HOSTS[0]}/v8/finance/chart/SPY", {"range": "5d", "interval": "1d"}),
+    ]
+    failures = 0
+    for label, url, params in steps:
+        try:
+            resp = session.get(url, params=params) if params else session.get(url)
+        except TRANSPORT_ERRORS as exc:
+            print(f"  {label}  ERROR  {type(exc).__name__}: {exc}")
+            failures += 1
+            continue
+
+        body = (resp.text or "")[:110].replace("\n", " ")
+        print(f"  {label}  HTTP {resp.status_code}  {body!r}")
+        for header in ("retry-after", "x-ratelimit-remaining", "content-type"):
+            value = resp.headers.get(header)
+            if value:
+                print(f"    {header}: {value}")
+        if resp.status_code >= 400:
+            failures += 1
+
+    cookies = getattr(session, "cookies", None)
+    names = sorted(getattr(cookies, "keys", lambda: [])())
+    print(f"\n  cookies held: {names or 'none'}")
+    provider.close()
+
+    print()
+    if failures == 0:
+        print("Yahoo is reachable - the chain should work.")
+        return 0
+    if not HAVE_CURL_CFFI:
+        print("Install curl_cffi and re-run: pip install -r requirements-yahoo.txt")
+    else:
+        print(
+            "Still blocked with browser impersonation, so the limit is on your IP\n"
+            "rather than the client. Options: wait it out, try another network or\n"
+            "VPN exit, or use a source that is not Yahoo (see docs/data-sources.md)."
+        )
+    return 1
 
 
 def list_futu_codes() -> int:
@@ -80,6 +166,11 @@ def main(argv: list[str] | None = None) -> int:
         help="comma-separated provider names to test (default: the configured chain)",
     )
     parser.add_argument(
+        "--probe-yahoo",
+        action="store_true",
+        help="walk Yahoo's cookie/crumb/chart handshake and report each status",
+    )
+    parser.add_argument(
         "--futu-codes",
         action="store_true",
         help="list the US index codes your Futu account exposes, then exit",
@@ -91,6 +182,8 @@ def main(argv: list[str] | None = None) -> int:
         format="%(levelname)s %(name)s: %(message)s",
     )
 
+    if args.probe_yahoo:
+        return probe_yahoo()
     if args.futu_codes:
         return list_futu_codes()
 
@@ -100,6 +193,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"No known providers in {names!r}.", file=sys.stderr)
         return 2
 
+    print(environment())
     print(f"Lookback: {settings.lookback_days} days   Chain: {', '.join(p.name for p in providers)}\n")
 
     working: list[str] = []

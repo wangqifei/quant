@@ -1,0 +1,10 @@
+# OPTIONAL but recommended if Yahoo returns HTTP 429.
+#
+# Yahoo fingerprints the TLS handshake, so a plain Python client is
+# recognisable no matter what headers it sends, and gets throttled. curl_cffi
+# performs the handshake with a real browser's fingerprint.
+#
+# Small install - no pandas, no numpy. pip picks a build for your Python:
+# 3.10+ gets the current release, 3.9 resolves to 0.13.x, which has the same
+# Session(impersonate=...) API this project uses.
+curl_cffi>=0.7

@@ -56,3 +56,20 @@ def test_main_reports_success_for_a_live_provider(capsys, monkeypatch):
     monkeypatch.setattr(diagnose, "build_providers", lambda names: [FakeLive()])
     assert diagnose.main(["--providers", "yahoo"]) == 0
     assert "Live data available from: yahoo" in capsys.readouterr().out
+
+
+def test_environment_reports_python_and_optional_packages():
+    text = diagnose.environment()
+    assert "Python" in text
+    assert "curl_cffi" in text and "futu-api" in text
+
+
+def test_probe_yahoo_reports_each_step(capsys):
+    # Network is unreachable in CI, so every step errors - the point is that
+    # the probe reports per-step outcomes instead of one opaque failure.
+    rc = diagnose.probe_yahoo()
+    out = capsys.readouterr().out
+    assert "Transport:" in out
+    assert "cookie" in out and "crumb" in out and "chart SPY" in out
+    assert "cookies held:" in out
+    assert rc in (0, 1)

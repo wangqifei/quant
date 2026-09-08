@@ -146,3 +146,67 @@ def test_html_crumb_body_is_rejected():
     rec = HtmlCrumb([httpx.Response(200, json=YAHOO_PAYLOAD)])
     make_provider(rec).fetch("SPX", 30)
     assert "crumb" not in rec.chart_requests[0].url.params
+
+
+# -- transport selection -------------------------------------------------
+
+def test_auto_uses_curl_cffi_when_available(monkeypatch):
+    from app import providers
+
+    session, description = providers.make_yahoo_session("auto")
+    if providers.HAVE_CURL_CFFI:
+        assert description.startswith("curl_cffi/")
+    else:
+        assert description == "httpx"
+    if hasattr(session, "close"):
+        session.close()
+
+
+def test_off_always_uses_httpx():
+    from app import providers
+
+    session, description = providers.make_yahoo_session("off")
+    assert description == "httpx"
+    assert isinstance(session, httpx.Client)
+    session.close()
+
+
+def test_named_target_without_curl_cffi_is_an_actionable_error(monkeypatch):
+    import builtins
+
+    from app import providers
+
+    real_import = builtins.__import__
+
+    def no_curl(name, *args, **kwargs):
+        if name.startswith("curl_cffi"):
+            raise ImportError("no curl_cffi")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_curl)
+    with pytest.raises(ProviderError, match="requirements-yahoo"):
+        providers.make_yahoo_session("chrome")
+
+
+def test_auto_falls_back_to_httpx_without_curl_cffi(monkeypatch):
+    import builtins
+
+    from app import providers
+
+    real_import = builtins.__import__
+
+    def no_curl(name, *args, **kwargs):
+        if name.startswith("curl_cffi"):
+            raise ImportError("no curl_cffi")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", no_curl)
+    session, description = providers.make_yahoo_session("auto")
+    assert description == "httpx"
+    session.close()
+
+
+def test_failure_message_names_the_transport():
+    rec = Recorder([httpx.Response(429)] * 5)
+    with pytest.raises(ProviderError, match="via injected"):
+        make_provider(rec, max_attempts=2).fetch("SPX", 30)

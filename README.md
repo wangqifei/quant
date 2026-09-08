@@ -101,9 +101,18 @@ python -m app.diagnose          # add -v for debug logging
 It tries every provider against both instruments and prints the price, bar
 count and latency on success, or the exact error on failure.
 
-**If Yahoo returns `HTTP 429`** it is throttling your IP, and no amount of
-retrying will help. Use a Futu/moomoo account instead — an authenticated
-broker feed is not rate-limited the way the public endpoints are:
+**If Yahoo returns `HTTP 429`**, Yahoo has recognised the client by its TLS
+fingerprint — headers alone cannot disguise it. Install the impersonating
+transport (curl_cffi only, no pandas):
+
+```bash
+pip install -r requirements-yahoo.txt
+python -m app.diagnose --probe-yahoo    # per-step handshake report
+```
+
+If it still fails with impersonation, the limit is genuinely on your IP. A
+Futu/moomoo account sidesteps it entirely — an authenticated broker feed is
+not rate-limited the way public endpoints are:
 
 ```bash
 pip install -r requirements-futu.txt
@@ -121,6 +130,7 @@ python -m app.diagnose               # confirms the link and prints your quota
 | Variable | Default | Purpose |
 |---|---|---|
 | `QUANT_PROVIDERS` | `yahoo,stooq,demo` | Provider chain, in priority order (`futu` also available) |
+| `YAHOO_IMPERSONATE` | `auto` | `auto` / `off` / a curl_cffi target like `chrome` |
 | `FUTU_HOST` / `FUTU_PORT` | `127.0.0.1` / `11111` | FutuOpenD gateway address |
 | `FUTU_SECURITY_FIRM` | `FUTUSECURITIES` | `FUTUSECURITIES`, `FUTUINC` or `FUTUSG` |
 | `FUTU_CODE_SPX` / `FUTU_CODE_SPY` | `US.SPX` / `US.SPY` | Futu ticker spellings |

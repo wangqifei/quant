@@ -31,13 +31,39 @@ following rather than issuing a bare GET:
 | Re-mint the crumb on 401/403 | Crumbs expire with the session |
 | Fail fast on other 4xx | A bad symbol shouldn't burn the retry budget |
 
-**Known remaining limitation.** Yahoo also fingerprints TLS handshakes. If you
-are throttled persistently (repeated `HTTP 429` from `app.diagnose`) rather
-than intermittently, a plain HTTP client cannot fix it — `yfinance` works
-around this with `curl_cffi` TLS impersonation. Adopting that means taking on
-pandas, numpy, curl_cffi and roughly a dozen transitive dependencies, which is
-why it is not the default. It remains the escape hatch if throttling becomes a
-real problem.
+### If Yahoo returns HTTP 429
+
+Yahoo fingerprints the **TLS handshake**, not just the headers. A Python
+client has a distinctive fingerprint and is recognisable however carefully you
+set the `User-Agent`, so persistent 429s are usually the client being
+identified rather than the IP being over quota.
+
+The fix is to perform the handshake with a real browser's fingerprint:
+
+```bash
+pip install -r requirements-yahoo.txt   # curl_cffi only - no pandas, no numpy
+python -m app.diagnose --probe-yahoo
+```
+
+`YahooProvider` picks its transport from `YAHOO_IMPERSONATE`:
+
+| Value | Behaviour |
+|---|---|
+| `auto` (default) | Use curl_cffi if installed, else httpx |
+| `off` | Always httpx |
+| `chrome`, `safari`, … | Force that curl_cffi target; error if not installed |
+
+`--probe-yahoo` walks the handshake one request at a time — cookie, crumb,
+chart — printing each status, any `retry-after`, the cookies held and which
+transport is in use. That distinguishes a recognisable client from a
+genuinely throttled IP, which the chain check cannot.
+
+If it still fails **with** impersonation, the limit really is on your IP:
+wait it out, change network, or use a non-Yahoo source below.
+
+`yfinance` bundles the same curl_cffi trick plus its own parsing, but costs
+roughly a dozen dependencies including pandas and numpy. Since this project
+already parses the chart payload, only the transport was worth borrowing.
 
 ## Stooq (fallback)
 
