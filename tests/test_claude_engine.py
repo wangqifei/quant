@@ -164,3 +164,30 @@ def test_unrelated_bad_request_is_not_retried(engine, snapshot):
         with pytest.raises(anthropic.BadRequestError):
             engine(mock).answer("q", snapshot, "", [])
     assert len(mock.requests) == 1
+
+
+def test_invalid_api_key_is_reported_as_a_config_fault(engine, snapshot):
+    """A 401 means the key is wrong - say so instead of retrying forever."""
+    from app.assistant import AssistantError
+
+    body = {"type": "error", "error": {"type": "authentication_error", "message": "API key is invalid."}}
+    with MockAPI([(401, body)]) as mock:
+        eng = engine(mock)
+        with pytest.raises(AssistantError, match="ANTHROPIC_API_KEY was rejected"):
+            eng.answer("q", snapshot, "", [])
+
+    # And it sticks: the engine now reports itself unavailable with that reason,
+    # so later questions fail fast instead of re-hitting a key we know is bad.
+    assert "rejected" in eng.unavailable_reason()
+    assert len(mock.requests) == 1
+
+
+def test_auth_failure_does_not_leak_the_key(engine, snapshot):
+    from app.assistant import AssistantError
+
+    body = {"type": "error", "error": {"type": "authentication_error", "message": "API key is invalid."}}
+    with MockAPI([(401, body)]) as mock:
+        eng = engine(mock)
+        with pytest.raises(AssistantError) as caught:
+            eng.answer("q", snapshot, "", [])
+    assert "sk-ant-test" not in str(caught.value)

@@ -302,3 +302,27 @@ def test_unavailable_reason_names_the_missing_key(monkeypatch):
     monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
     reason = ClaudeEngine(Settings()).unavailable_reason()
     assert "ANTHROPIC_API_KEY" in reason
+
+
+def test_forecast_question_returns_a_range_not_a_number(snapshot):
+    answer = LocalEngine().answer("predict the min and max spx value tmr", snapshot, "")
+    assert "σ" in answer
+    assert "dispersion estimate, not a direction call" in answer
+    assert "SPX" in answer
+    assert "SPY" not in answer  # the question named only SPX
+
+
+def test_forecast_states_its_assumptions(snapshot):
+    answer = LocalEngine().answer("what will spy do tomorrow", snapshot, "")
+    assert "annualised" in answer
+    assert "gap risk" in answer
+
+
+def test_forecast_degrades_without_enough_history():
+    thin = {
+        "instruments": {
+            "SPX": {"quote": {"name": "S&P 500 Index", "price": 100.0}, "metrics": {}},
+        },
+        "live": True,
+    }
+    assert "Not enough history" in LocalEngine().answer("predict tomorrow", thin, "")

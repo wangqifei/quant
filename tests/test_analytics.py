@@ -103,3 +103,41 @@ def test_compare_ignores_unmatched_dates():
     spx = make_bars([1000, 1100], start=date(2025, 1, 1))
     spy = make_bars([100, 110], start=date(2025, 6, 1))
     assert analytics.compare(spx, spy)["aligned_sessions"] == 0
+
+
+def test_expected_range_scales_with_volatility():
+    calm = [100.0 * (1.001 if i % 2 == 0 else 1 / 1.001) for i in range(80)]
+    wild = [100.0 * (1.03 if i % 2 == 0 else 1 / 1.03) for i in range(80)]
+    calm_band = analytics.expected_range(calm)["bands"][0]
+    wild_band = analytics.expected_range(wild)["bands"][0]
+    assert (wild_band["high"] - wild_band["low"]) > (calm_band["high"] - calm_band["low"])
+
+
+def test_expected_range_bands_bracket_the_last_close():
+    closes = [100 + i * 0.5 + (i % 3) for i in range(80)]
+    band = analytics.expected_range(closes)
+    assert band["last"] == closes[-1]
+    for entry in band["bands"]:
+        assert entry["low"] < closes[-1] < entry["high"]
+    # 2 sigma must be strictly wider than 1 sigma
+    assert band["bands"][1]["high"] > band["bands"][0]["high"]
+    assert band["bands"][1]["low"] < band["bands"][0]["low"]
+
+
+def test_expected_range_probabilities_are_the_normal_ones():
+    band = analytics.expected_range([100 + (i % 5) for i in range(80)])
+    assert band["bands"][0]["probability_pct"] == pytest.approx(68.27, abs=0.1)
+    assert band["bands"][1]["probability_pct"] == pytest.approx(95.45, abs=0.1)
+
+
+def test_expected_range_widens_with_horizon():
+    closes = [100 + (i % 7) * 0.4 for i in range(80)]
+    one = analytics.expected_range(closes, horizon_days=1)["sigma_pct"]
+    five = analytics.expected_range(closes, horizon_days=5)["sigma_pct"]
+    assert five == pytest.approx(one * 5 ** 0.5, rel=1e-9)
+
+
+def test_expected_range_needs_history():
+    assert analytics.expected_range([100.0]) is None
+    assert analytics.expected_range([]) is None
+    assert analytics.expected_range([100 + i for i in range(80)], horizon_days=0) is None

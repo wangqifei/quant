@@ -80,7 +80,13 @@ when it is not.
 Returns (1d/1w/1m/3m/6m/1y/YTD) · SMA 20/50/200 and distance from each · trend
 classification · annualised realized volatility (20d, 60d) · Wilder RSI(14) ·
 52-week high/low and distance from each · max drawdown · SPX↔SPY price ratio
-and tracking gap.
+and tracking gap · next-session expected range.
+
+**Expected range** answers "how high/low could it go tomorrow" by scaling
+recent realized volatility down to a one-day horizon and reporting 1σ (~68%)
+and 2σ (~95%) bands around the last close. It is a *dispersion* estimate with
+no directional view, it assumes normally distributed log returns, and it
+therefore understates gap risk around news — the answer says so every time.
 
 All of it lives in `app/analytics.py` as pure functions over a bar list, so
 each number is unit-testable and reproducible.

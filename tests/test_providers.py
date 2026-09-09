@@ -46,17 +46,95 @@ YAHOO_PAYLOAD = {
 }
 
 
-def test_yahoo_parse_uses_live_price_and_meta_previous_close():
+def test_yahoo_parse_uses_live_price_and_prior_bar_close():
     series = YahooProvider()._parse("SPX", YAHOO_PAYLOAD)
     assert len(series.bars) == 3
     # The live print replaces the last daily close rather than appending a bar.
     assert series.bars[-1].close == 5450.0
     assert series.bars[-1].high == 5450.0  # widened past the stale 5430 high
     assert series.quote.price == 5450.0
+    # The prior session's bar close - not meta.chartPreviousClose.
     assert series.quote.previous_close == 5400.0
     assert series.quote.change == pytest.approx(50.0)
     assert series.quote.as_of == date(2025, 6, 4)
     assert series.quote.source == "yahoo"
+
+
+def test_stale_chart_previous_close_is_ignored():
+    """Regression: a 2y range reported a +41.88% daily move.
+
+    meta.chartPreviousClose is the close before the chart range starts, so on
+    a long range it is years old. Using it made the quote disagree wildly with
+    the bars it was built from.
+    """
+    payload = {
+        "chart": {
+            "error": None,
+            "result": [
+                {
+                    "meta": {
+                        "symbol": "^GSPC",
+                        "currency": "USD",
+                        "regularMarketPrice": 7673.52,
+                        "chartPreviousClose": 5408.42,          # two years stale
+                        "regularMarketPreviousClose": 7654.90,
+                        "regularMarketTime": epoch(2026, 9, 8),
+                    },
+                    "timestamp": [epoch(2026, 9, 4), epoch(2026, 9, 5), epoch(2026, 9, 8)],
+                    "indicators": {
+                        "quote": [
+                            {
+                                "open": [7600.0, 7640.0, 7666.99],
+                                "high": [7650.0, 7680.0, 7717.81],
+                                "low": [7590.0, 7620.0, 7666.99],
+                                "close": [7640.0, 7654.90, 7670.0],
+                                "volume": [1, 2, 3],
+                            }
+                        ]
+                    },
+                }
+            ],
+        }
+    }
+    quote = YahooProvider()._parse("SPX", payload).quote
+    assert quote.previous_close == 7654.90
+    assert quote.change_pct == pytest.approx(0.243, abs=0.01)
+    assert abs(quote.change_pct) < 25  # no plausible SPX session moves this much
+
+
+def test_quote_change_agrees_with_the_computed_1d_return():
+    """The quote and the metrics must not tell different stories."""
+    from app.analytics import summarize
+
+    series = YahooProvider()._parse("SPX", YAHOO_PAYLOAD)
+    metrics = summarize(series.bars)
+    assert metrics["returns"]["1d"] == pytest.approx(series.quote.change_pct, abs=1e-9)
+
+
+def test_meta_previous_close_used_only_when_there_is_no_prior_bar():
+    payload = {
+        "chart": {
+            "error": None,
+            "result": [
+                {
+                    "meta": {"regularMarketPreviousClose": 5390.0},
+                    "timestamp": [epoch(2025, 6, 4)],
+                    "indicators": {
+                        "quote": [
+                            {
+                                "open": [5400.0],
+                                "high": [5430.0],
+                                "low": [5390.0],
+                                "close": [5420.0],
+                                "volume": [1],
+                            }
+                        ]
+                    },
+                }
+            ],
+        }
+    }
+    assert YahooProvider()._parse("SPX", payload).quote.previous_close == 5390.0
 
 
 def test_yahoo_parse_skips_null_padded_sessions():

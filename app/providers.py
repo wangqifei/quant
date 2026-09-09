@@ -305,7 +305,15 @@ class YahooProvider(Provider):
             if market_time
             else bars[-1].date
         )
-        prev_close = meta.get("chartPreviousClose")
+        # NOT meta.chartPreviousClose: that is the close before the *chart
+        # range* begins, so on a 2y range it is two years stale and yields an
+        # absurd daily change. Derive the prior close from the bars instead,
+        # which also keeps quote.change_pct consistent with the 1d figure in
+        # metrics.returns. Only fall back to meta when there is no prior bar.
+        prev_close = None
+        if len(bars) < 2:
+            prev_close = meta.get("regularMarketPreviousClose") or meta.get("previousClose")
+
         if live is not None and as_of == bars[-1].date:
             # Replace the stale final close with the live print.
             last = bars[-1]

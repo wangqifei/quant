@@ -102,6 +102,44 @@ def ytd_return(bars: list[Bar]) -> float | None:
     return pct_change(bars[-1].close, base)
 
 
+def expected_range(
+    closes: list[float],
+    horizon_days: int = 1,
+    sigmas: tuple[float, ...] = (1.0, 2.0),
+    vol_window: int = 20,
+) -> dict[str, Any] | None:
+    """Volatility-implied range for the next ``horizon_days`` sessions.
+
+    Scales recent realized volatility down to the horizon and reports
+    log-normal bands around the last close. This is a *dispersion* estimate,
+    not a directional forecast: it says how far price plausibly travels, with
+    no view on which way. Probabilities assume normally distributed log
+    returns, which understates the tails - real markets gap.
+    """
+    annual_vol = realized_vol(closes, vol_window)
+    if annual_vol is None or not closes or horizon_days <= 0:
+        return None
+
+    last = closes[-1]
+    sigma = (annual_vol / 100.0) / math.sqrt(TRADING_DAYS) * math.sqrt(horizon_days)
+    return {
+        "last": last,
+        "horizon_days": horizon_days,
+        "sigma_pct": sigma * 100.0,
+        "vol_window": vol_window,
+        "annualised_vol_pct": annual_vol,
+        "bands": [
+            {
+                "sigma": s,
+                "low": last * math.exp(-s * sigma),
+                "high": last * math.exp(s * sigma),
+                "probability_pct": math.erf(s / math.sqrt(2.0)) * 100.0,
+            }
+            for s in sigmas
+        ],
+    }
+
+
 def summarize(bars: list[Bar]) -> dict[str, Any]:
     """Full metric block for one instrument."""
     if not bars:
@@ -145,6 +183,7 @@ def summarize(bars: list[Bar]) -> dict[str, Any]:
             "sessions_used": len(window_bars),
         },
         "max_drawdown_pct": max_drawdown([b.close for b in window_bars]),
+        "next_session_range": expected_range(closes),
         "trend": _trend_label(last, moving_averages),
     }
 
