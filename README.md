@@ -30,9 +30,13 @@ and set a key:
 
 ```bash
 pip install -r requirements-assistant.txt   # needs Python 3.10+
-export ANTHROPIC_API_KEY=sk-ant-...
+export ANTHROPIC_API_KEY='<paste your real key here>'
 ./run.sh
 ```
+
+Get the key from <https://console.anthropic.com/settings/keys>. It is a long
+string beginning `sk-ant-api03-`; if what you exported is short, you have
+pasted a placeholder rather than the key itself.
 
 Skip this and everything still runs; the panel just stays on the local engine.
 
@@ -66,7 +70,7 @@ Answers are labelled with the engine, the model and how long the call took.
 
 ```bash
 pip install -r requirements-assistant.txt   # needs Python 3.10+
-export ANTHROPIC_API_KEY=sk-ant-...         # in the shell that runs ./run.sh
+export ANTHROPIC_API_KEY='<paste your real key here>'   # in the shell that runs ./run.sh
 ./run.sh
 ```
 

@@ -193,3 +193,24 @@ def test_probe_model_never_prints_the_whole_key(capsys, monkeypatch):
     out = capsys.readouterr().out
     assert secret not in out
     assert "sk-ant-api" in out  # the prefix alone is fine for identification
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "sk-ant-...",              # the literal placeholder from the docs
+        "<your-api-key>",
+        "YOUR_API_KEY",
+        "sk-ant-api03-REPLACE_ME",
+        "'sk-ant-...'",            # placeholder that also kept its quotes
+    ],
+)
+def test_key_shape_calls_out_placeholder_text(value):
+    problems = diagnose._key_shape(value)
+    assert any("placeholder text" in p for p in problems)
+    # The placeholder message stands alone - length/prefix noise would bury it.
+    assert len(problems) == 1
+
+
+def test_a_real_looking_key_is_not_called_a_placeholder():
+    assert diagnose._key_shape("sk-ant-api03-" + "a" * 90) == []

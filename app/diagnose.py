@@ -12,6 +12,8 @@ import logging
 import sys
 import time
 
+import re
+
 from .config import settings
 from .providers import (
     HAVE_CURL_CFFI,
@@ -69,6 +71,20 @@ def _key_shape(raw: str) -> list[str]:
     truncated copy.
     """
     problems = []
+    stripped_early = raw.strip().strip("\"'")
+    # Placeholder text copied out of documentation instead of a real key.
+    if (
+        "..." in stripped_early
+        or stripped_early.lower() in {"sk-ant-", "your-key", "your_api_key", "xxx", "changeme"}
+        or re.fullmatch(r"[<{\[].*[>}\]]", stripped_early)
+        or re.search(r"(your[_-]?(api[_-]?)?key|replace[_-]?me|paste[_-]?here)", stripped_early, re.I)
+    ):
+        problems.append(
+            "is placeholder text from the docs, not a real key - copy the actual "
+            "key from https://console.anthropic.com/settings/keys"
+        )
+        return problems  # no point reporting length or prefix on a placeholder
+
     if raw != raw.strip():
         problems.append("has leading/trailing whitespace or a newline - re-export without it")
     stripped = raw.strip()
@@ -106,7 +122,7 @@ def probe_model() -> int:
         print("ANTHROPIC_API_KEY is not set in THIS shell.")
         print("  The server reads it from its own environment, so it must be exported")
         print("  in the same shell that runs ./run.sh:")
-        print("    export ANTHROPIC_API_KEY=sk-ant-...")
+        print("    export ANTHROPIC_API_KEY='<paste the real key>'")
         return 2
 
     if raw:
@@ -131,8 +147,10 @@ def probe_model() -> int:
         print("   - it was revoked, or belongs to a different/deleted workspace")
         print("   - it was copied incompletely, or with quotes/whitespace (see above)")
         print("   - an old key is still exported in this shell, shadowing a new one")
-        print("  Mint a fresh key at https://console.anthropic.com/settings/keys,")
-        print("  then: export ANTHROPIC_API_KEY=sk-ant-... && ./run.sh")
+        print("  Get a key at https://console.anthropic.com/settings/keys - it is a")
+        print("  long string starting 'sk-ant-api03-'. Then, in the SAME shell:")
+        print("    export ANTHROPIC_API_KEY='<paste the real key>'")
+        print("    ./run.sh")
         return 1
     except anthropic.PermissionDeniedError as exc:
         print(f"PERMISSION DENIED (403) - the key authenticated but lacks access: {exc}")
