@@ -102,9 +102,10 @@ def engine(monkeypatch):
 
 def test_request_shape(engine, snapshot):
     with MockAPI([(200, message_body())]) as mock:
-        answer = engine(mock).answer("what is SPY at", snapshot, "- Long 200 SPY at 551", [])
+        reply = engine(mock).answer("what is SPY at", snapshot, "- Long 200 SPY at 551", [])
 
-    assert answer == "SPY is 581.67."
+    assert reply.text == "SPY is 581.67."
+    assert reply.model == "claude-opus-5"  # from the response body, not config
     request = mock.requests[0]
     body = request["body"]
 
@@ -150,7 +151,7 @@ def test_retries_once_without_fallbacks_when_the_beta_is_rejected(engine, snapsh
     rejection = {"type": "error", "error": {"type": "invalid_request_error", "message": "fallbacks is not supported"}}
     with MockAPI([(400, rejection), (200, message_body())]) as mock:
         eng = engine(mock)
-        assert eng.answer("q", snapshot, "", []) == "SPY is 581.67."
+        assert eng.answer("q", snapshot, "", []).text == "SPY is 581.67."
 
     assert len(mock.requests) == 2
     assert mock.requests[0]["body"]["fallbacks"] == "default"
@@ -191,3 +192,12 @@ def test_auth_failure_does_not_leak_the_key(engine, snapshot):
         with pytest.raises(AssistantError) as caught:
             eng.answer("q", snapshot, "", [])
     assert "sk-ant-test" not in str(caught.value)
+
+
+def test_serving_model_is_read_from_the_response(engine, snapshot):
+    """With refusal fallbacks on, another model may serve the request."""
+    body = message_body()
+    body["model"] = "claude-opus-4-8"
+    with MockAPI([(200, body)]) as mock:
+        reply = engine(mock).answer("q", snapshot, "", [])
+    assert reply.model == "claude-opus-4-8"

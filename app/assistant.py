@@ -415,7 +415,11 @@ class ClaudeEngine:
             raise AssistantError(f"the model declined to answer this request (category: {category})")
 
         text = "\n".join(block.text for block in response.content if block.type == "text").strip()
-        return text or "The model returned an empty response."
+        return ClaudeReply(
+            text=text or "The model returned an empty response.",
+            # response.model names what actually served the request.
+            model=getattr(response, "model", None) or self.settings.anthropic_model,
+        )
 
     def _create(self, client, kwargs: dict[str, Any]):
         # "default" lets Anthropic route a declined request to a suitable
@@ -451,6 +455,19 @@ def _compact_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
             "recent_closes": [{"date": b["date"], "close": b["close"]} for b in bars[-20:]],
         }
     return out
+
+
+@dataclass(frozen=True)
+class ClaudeReply:
+    """A model answer plus the model that actually produced it.
+
+    ``model`` comes from the API response, not from configuration: with
+    server-side refusal fallbacks enabled, a declined request can be served by
+    a different model than the one requested.
+    """
+
+    text: str
+    model: str
 
 
 class AssistantError(RuntimeError):
@@ -503,7 +520,7 @@ class Assistant:
             return self._local_result(question, snapshot, context, note=reason)
 
         try:
-            text = self.claude.answer(question, snapshot, context, history or [])
+            reply = self.claude.answer(question, snapshot, context, history or [])
         except Exception as exc:  # noqa: BLE001 - the SDK raises many types
             log.warning("claude engine failed: %s", exc)
             if prefer == "claude":
@@ -515,7 +532,18 @@ class Assistant:
                 warning=f"Claude unavailable ({exc}); answered from local metrics.",
             )
 
-        return {"answer": text, "engine": "claude", "model": self.settings.anthropic_model}
+        requested = self.settings.anthropic_model
+        result: dict[str, Any] = {
+            "answer": reply.text,
+            "engine": "claude",
+            "model": reply.model,
+            "requested_model": requested,
+        }
+        if reply.model != requested:
+            # A refusal fallback re-routed this request; say so rather than
+            # crediting the answer to a model that did not write it.
+            result["note"] = f"Served by {reply.model} after {requested} declined the request."
+        return result
 
     def _local_result(
         self,

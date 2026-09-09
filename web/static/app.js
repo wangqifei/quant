@@ -289,6 +289,8 @@
       const secs = ((Date.now() - started) / 1000).toFixed(1);
       pending.classList.remove("pending");
       const footer = data.warning ? `\n\n_${data.warning}_` : data.note ? `\n\n_${data.note}_` : "";
+      // data.model is the model that actually served the request, which can
+      // differ from the configured one when a refusal fallback fires.
       pending.innerHTML =
         `<div class="who">Analysis · ${data.engine}` +
         `${data.model ? " · " + escapeHtml(data.model) : ""} · ${secs}s</div>` +

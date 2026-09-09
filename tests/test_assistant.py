@@ -3,6 +3,7 @@ import pytest
 from app.assistant import (
     Assistant,
     ClaudeEngine,
+    ClaudeReply,
     ContextStore,
     LocalEngine,
     _compact_snapshot,
@@ -193,14 +194,16 @@ def test_assistant_passes_context_and_history_to_claude(snapshot, tmp_path):
 
         def answer(self, question, snap, context, history):
             seen.update(question=question, context=context, history=history)
-            return "ok"
+            return ClaudeReply(text="ok", model="claude-opus-5")
 
     settings = Settings(context_path=tmp_path / "c.json")
     assistant = Assistant(settings=settings, claude=RecordingClaude())
     assistant.store.add("Long 200 SPY at 551")
     result = assistant.ask("spy price", snapshot, history=[{"role": "user", "content": "hi"}])
 
-    assert result == {"answer": "ok", "engine": "claude", "model": settings.anthropic_model}
+    assert result["answer"] == "ok"
+    assert result["engine"] == "claude"
+    assert result["model"] == settings.anthropic_model
     assert "Long 200 SPY at 551" in seen["context"]
     assert seen["history"] == [{"role": "user", "content": "hi"}]
 
@@ -239,7 +242,7 @@ class _Working:
 
     def answer(self, question, snap, context, history):
         self.calls += 1
-        return self.text
+        return ClaudeReply(text=self.text, model="claude-opus-5")
 
 
 def _assistant(tmp_path, claude):
@@ -326,3 +329,25 @@ def test_forecast_degrades_without_enough_history():
         "live": True,
     }
     assert "Not enough history" in LocalEngine().answer("predict tomorrow", thin, "")
+
+
+def test_answer_credits_the_model_that_actually_served_it(snapshot, tmp_path):
+    """A refusal fallback must not be credited to the requested model."""
+
+    class FellBack:
+        def unavailable_reason(self):
+            return None
+
+        def answer(self, *a, **k):
+            return ClaudeReply(text="answer", model="claude-opus-4-8")
+
+    result = _assistant(tmp_path, FellBack()).ask("read the tape", snapshot, prefer="claude")
+    assert result["model"] == "claude-opus-4-8"
+    assert result["requested_model"] == "claude-opus-5"
+    assert "declined" in result["note"]
+
+
+def test_no_fallback_note_when_the_requested_model_served(snapshot, tmp_path):
+    result = _assistant(tmp_path, _Working()).ask("read the tape", snapshot, prefer="claude")
+    assert result["model"] == result["requested_model"] == "claude-opus-5"
+    assert "note" not in result

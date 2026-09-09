@@ -75,6 +75,20 @@ reaches the page. Check it took effect at `/api/health`: `claude_available`
 should be `true`, and `claude_unavailable_reason` tells you what is missing
 when it is not.
 
+#### Which model am I querying?
+
+`claude-opus-5` by default. Override with `ANTHROPIC_MODEL`.
+
+```bash
+curl -sS localhost:8000/api/health          # the model the app will request
+```
+
+Every answer is labelled with the model that **actually served it**, read
+from the API response rather than from configuration. These can differ:
+server-side refusal fallbacks are enabled, so a declined request may be
+answered by a different model. When that happens the reply says so instead of
+crediting the answer to the model that declined it.
+
 ## Metrics computed
 
 Returns (1d/1w/1m/3m/6m/1y/YTD) · SMA 20/50/200 and distance from each · trend
@@ -158,7 +172,7 @@ python -m app.diagnose               # confirms the link and prints your quota
 | `QUANT_LOOKBACK_DAYS` | `420` | Calendar days of history to request |
 | `QUANT_CACHE_TTL` | `60` | Seconds before a symbol is refetched |
 | `ANTHROPIC_API_KEY` | — | Enables the Claude engine |
-| `ANTHROPIC_MODEL` | `claude-opus-5` | Model for the assistant |
+| `ANTHROPIC_MODEL` | `claude-opus-5` | Model the assistant requests |
 | `ANTHROPIC_MAX_TOKENS` | `16000` | Response cap (thinking tokens count toward it) |
 | `PORT` | `8000` | Server port |
 
