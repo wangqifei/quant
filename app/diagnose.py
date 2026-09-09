@@ -78,28 +78,36 @@ def probe_yahoo() -> int:
         print("  which Yahoo throttles. `pip install -r requirements-yahoo.txt` (needs 3.10+).")
     print()
 
+    # Only the chart call decides the verdict. fc.yahoo.com always answers 404
+    # - it exists to set the A1/A3 cookies, not to serve a page - and the crumb
+    # is best-effort, since the chart endpoint usually works without one.
     steps = [
-        ("cookie   ", YahooProvider.COOKIE_URL, None),
-        ("crumb    ", YahooProvider.CRUMB_URL, None),
-        ("chart SPY", f"https://{YahooProvider.HOSTS[0]}/v8/finance/chart/SPY", {"range": "5d", "interval": "1d"}),
+        ("cookie   ", YahooProvider.COOKIE_URL, None, False),
+        ("crumb    ", YahooProvider.CRUMB_URL, None, False),
+        (
+            "chart SPY",
+            f"https://{YahooProvider.HOSTS[0]}/v8/finance/chart/SPY",
+            {"range": "5d", "interval": "1d"},
+            True,
+        ),
     ]
-    failures = 0
-    for label, url, params in steps:
+    chart_ok = False
+    for label, url, params, decisive in steps:
+        note = "" if decisive else "   (informational)"
         try:
             resp = session.get(url, params=params) if params else session.get(url)
         except TRANSPORT_ERRORS as exc:
-            print(f"  {label}  ERROR  {type(exc).__name__}: {exc}")
-            failures += 1
+            print(f"  {label}  ERROR  {type(exc).__name__}: {exc}{note}")
             continue
 
         body = (resp.text or "")[:110].replace("\n", " ")
-        print(f"  {label}  HTTP {resp.status_code}  {body!r}")
+        print(f"  {label}  HTTP {resp.status_code}  {body!r}{note}")
         for header in ("retry-after", "x-ratelimit-remaining", "content-type"):
             value = resp.headers.get(header)
             if value:
                 print(f"    {header}: {value}")
-        if resp.status_code >= 400:
-            failures += 1
+        if decisive and resp.status_code == 200:
+            chart_ok = True
 
     cookies = getattr(session, "cookies", None)
     names = sorted(getattr(cookies, "keys", lambda: [])())
@@ -107,8 +115,13 @@ def probe_yahoo() -> int:
     provider.close()
 
     print()
-    if failures == 0:
-        print("Yahoo is reachable - the chain should work.")
+    if chart_ok:
+        print(
+            "WORKING - Yahoo returned chart data over "
+            f"{provider.transport}.\n"
+            "Run `python -m app.diagnose` to confirm the whole chain, then start\n"
+            "the app: the badge should read `live` instead of `demo data`."
+        )
         return 0
     if not HAVE_CURL_CFFI:
         print("Install curl_cffi and re-run: pip install -r requirements-yahoo.txt")
