@@ -61,6 +61,103 @@ def environment() -> str:
     )
 
 
+def _key_shape(raw: str) -> list[str]:
+    """Report suspicious characteristics of the key without printing it.
+
+    A 401 from a key that "looks right" pasted into a terminal is usually one
+    of these: surrounding quotes the shell kept, a trailing newline, or a
+    truncated copy.
+    """
+    problems = []
+    if raw != raw.strip():
+        problems.append("has leading/trailing whitespace or a newline - re-export without it")
+    stripped = raw.strip()
+    if len(stripped) >= 2 and stripped[0] == stripped[-1] and stripped[0] in "\"'":
+        problems.append("is wrapped in quotes - the shell kept them as part of the value")
+    if any(c in stripped for c in " \t\n\r"):
+        problems.append("contains an internal space or newline - it was probably line-wrapped on paste")
+    if not stripped.startswith("sk-ant-"):
+        problems.append(f"does not start with 'sk-ant-' (starts with {stripped[:7]!r})")
+    if len(stripped) < 40:
+        problems.append(f"is only {len(stripped)} characters - looks truncated")
+    return problems
+
+
+def probe_model() -> int:
+    """Check the assistant's credentials without spending tokens.
+
+    Uses the models endpoint, which authenticates but generates nothing, then
+    confirms the configured model is actually available to the account.
+    """
+    import os
+
+    print(environment(), "\n")
+
+    try:
+        import anthropic
+    except ImportError:
+        print("The `anthropic` package is not installed.")
+        print("  pip install -r requirements-assistant.txt   (needs Python 3.10+)")
+        return 2
+
+    raw = os.environ.get("ANTHROPIC_API_KEY") or ""
+    token = os.environ.get("ANTHROPIC_AUTH_TOKEN") or ""
+    if not raw and not token:
+        print("ANTHROPIC_API_KEY is not set in THIS shell.")
+        print("  The server reads it from its own environment, so it must be exported")
+        print("  in the same shell that runs ./run.sh:")
+        print("    export ANTHROPIC_API_KEY=sk-ant-...")
+        return 2
+
+    if raw:
+        stripped = raw.strip()
+        print(f"ANTHROPIC_API_KEY: set, {len(stripped)} chars, "
+              f"starts {stripped[:10]!r}, ends {stripped[-4:]!r}")
+        problems = _key_shape(raw)
+        for problem in problems:
+            print(f"  PROBLEM: the value {problem}")
+        if not problems:
+            print("  shape looks normal")
+    if token:
+        print("ANTHROPIC_AUTH_TOKEN is also set - it takes precedence over the API key")
+    print(f"Configured model: {settings.anthropic_model}\n")
+
+    client = anthropic.Anthropic()
+    try:
+        client.models.list(limit=1)
+    except anthropic.AuthenticationError:
+        print("AUTH FAILED (401) - the API rejected this key.")
+        print("  The key is not valid for this account. Common causes:")
+        print("   - it was revoked, or belongs to a different/deleted workspace")
+        print("   - it was copied incompletely, or with quotes/whitespace (see above)")
+        print("   - an old key is still exported in this shell, shadowing a new one")
+        print("  Mint a fresh key at https://console.anthropic.com/settings/keys,")
+        print("  then: export ANTHROPIC_API_KEY=sk-ant-... && ./run.sh")
+        return 1
+    except anthropic.PermissionDeniedError as exc:
+        print(f"PERMISSION DENIED (403) - the key authenticated but lacks access: {exc}")
+        return 1
+    except anthropic.APIConnectionError as exc:
+        print(f"NETWORK ERROR - could not reach the API: {exc}")
+        return 1
+    except Exception as exc:  # noqa: BLE001 - report anything else verbatim
+        print(f"UNEXPECTED ERROR: {type(exc).__name__}: {exc}")
+        return 1
+
+    print("AUTH OK - the key is valid.")
+
+    try:
+        model = client.models.retrieve(settings.anthropic_model)
+    except Exception as exc:  # noqa: BLE001
+        print(f"\nBut the configured model is not available: {exc}")
+        print(f"  Pick another with: export ANTHROPIC_MODEL=<id>")
+        return 1
+
+    print(f"MODEL OK - {getattr(model, 'id', settings.anthropic_model)} is available to this account.")
+    print("\nRestart the server and the panel will answer with the model.")
+    return 0
+
+
 def probe_yahoo() -> int:
     """Walk Yahoo's handshake one step at a time and report each status.
 
@@ -179,6 +276,11 @@ def main(argv: list[str] | None = None) -> int:
         help="comma-separated provider names to test (default: the configured chain)",
     )
     parser.add_argument(
+        "--probe-model",
+        action="store_true",
+        help="check the assistant's API key and model access, without spending tokens",
+    )
+    parser.add_argument(
         "--probe-yahoo",
         action="store_true",
         help="walk Yahoo's cookie/crumb/chart handshake and report each status",
@@ -195,6 +297,8 @@ def main(argv: list[str] | None = None) -> int:
         format="%(levelname)s %(name)s: %(message)s",
     )
 
+    if args.probe_model:
+        return probe_model()
     if args.probe_yahoo:
         return probe_yahoo()
     if args.futu_codes:

@@ -148,3 +148,48 @@ def test_probe_fails_when_crumb_works_but_chart_does_not(capsys, monkeypatch):
         "/v8/finance/chart/": _StubResponse(403, "Forbidden"),
     }))
     assert diagnose.probe_yahoo() == 1
+
+
+# ---------------------------------------------------------- key shape checks
+
+def test_key_shape_accepts_a_clean_key():
+    assert diagnose._key_shape("sk-ant-api03-" + "a" * 60) == []
+
+
+def test_key_shape_flags_surrounding_quotes():
+    problems = diagnose._key_shape("'sk-ant-api03-" + "a" * 60 + "'")
+    assert any("wrapped in quotes" in p for p in problems)
+
+
+def test_key_shape_flags_trailing_newline():
+    problems = diagnose._key_shape("sk-ant-api03-" + "a" * 60 + "\n")
+    assert any("whitespace or a newline" in p for p in problems)
+
+
+def test_key_shape_flags_internal_whitespace():
+    problems = diagnose._key_shape("sk-ant-api03-" + "a" * 30 + " " + "a" * 30)
+    assert any("internal space" in p for p in problems)
+
+
+def test_key_shape_flags_truncation_and_wrong_prefix():
+    problems = diagnose._key_shape("nope-123")
+    assert any("truncated" in p for p in problems)
+    assert any("sk-ant-" in p for p in problems)
+
+
+def test_probe_model_reports_a_missing_key(capsys, monkeypatch):
+    pytest.importorskip("anthropic")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    assert diagnose.probe_model() == 2
+    assert "not set in THIS shell" in capsys.readouterr().out
+
+
+def test_probe_model_never_prints_the_whole_key(capsys, monkeypatch):
+    pytest.importorskip("anthropic")
+    secret = "sk-ant-api03-" + "z" * 60
+    monkeypatch.setenv("ANTHROPIC_API_KEY", secret)
+    diagnose.probe_model()
+    out = capsys.readouterr().out
+    assert secret not in out
+    assert "sk-ant-api" in out  # the prefix alone is fine for identification

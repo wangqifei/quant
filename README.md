@@ -75,6 +75,17 @@ reaches the page. Check it took effect at `/api/health`: `claude_available`
 should be `true`, and `claude_unavailable_reason` tells you what is missing
 when it is not.
 
+#### The panel says the key was rejected (HTTP 401)
+
+```bash
+python -m app.diagnose --probe-model
+```
+
+Checks the key's shape for the usual paste damage (kept quotes, a trailing
+newline, truncation), then authenticates against the models endpoint — which
+validates credentials without generating any tokens — and confirms the
+configured model is available to your account. It never prints the whole key.
+
 #### Which model am I querying?
 
 `claude-opus-5` by default. Override with `ANTHROPIC_MODEL`.
