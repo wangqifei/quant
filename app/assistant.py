@@ -36,6 +36,9 @@ CONTEXT NOTES. Ground every claim in those. Rules:
 
 - Quote numbers only from the snapshot. If a figure is not there, say so instead of \
 estimating it.
+- The snapshot covers ONLY the instruments it lists. If the user asks about any other \
+ticker or company, say plainly that this dashboard does not track it. Never answer with \
+a different instrument's numbers, and never supply a price from memory.
 - The snapshot has a timestamp and a data source. If the source is "demo" the data is \
 synthetic - say that plainly before answering.
 - Be concise and quantitative. Lead with the number, then the read.
@@ -132,6 +135,29 @@ SYMBOL_PATTERNS = {
     "SPX": re.compile(r"\b(spx|s&p|s and p|sp500|sp 500|500|gspc|index)\b", re.I),
 }
 
+# Finance shorthand that looks like a ticker but is not one. Without this,
+# "what's the RSI" would be read as a question about a stock called RSI.
+NOT_TICKERS = frozenset({
+    "RSI", "SMA", "EMA", "MA", "DMA", "MACD", "ADX", "VWAP", "OHLC", "ATR", "BB",
+    "YTD", "MTD", "QTD", "YOY", "MOM", "WOW", "EOD", "ATH", "ATL", "DD",
+    "USD", "EUR", "GBP", "JPY", "CNY", "HKD",
+    "ETF", "GDP", "CPI", "PPI", "FED", "FOMC", "EPS", "PE", "PEG", "IPO", "NAV",
+    "AUM", "ROI", "IRR", "CAGR", "TA", "FA", "AI", "API", "URL", "OK", "IMO",
+    "US", "UK", "EU", "AM", "PM", "AH", "A", "I", "AND", "OR", "THE", "AT",
+    "AVG", "MIN", "MAX", "VS", "AKA", "AND", "AAA", "Q1", "Q2", "Q3", "Q4",
+})
+
+# Company names people use instead of tickers.
+COMPANY_ALIASES = {
+    "google": "GOOG", "alphabet": "GOOGL", "apple": "AAPL", "tesla": "TSLA",
+    "nvidia": "NVDA", "amazon": "AMZN", "microsoft": "MSFT", "meta": "META",
+    "facebook": "META", "netflix": "NFLX", "nasdaq": "the Nasdaq",
+    "dow": "the Dow", "russell": "the Russell", "bitcoin": "bitcoin",
+    "vix": "the VIX",
+}
+
+TICKER_RE = re.compile(r"\b[A-Z]{1,5}\b")
+
 INTENT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     (
         "forecast",
@@ -155,6 +181,33 @@ INTENT_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 def detect_symbols(question: str) -> list[str]:
     found = [sym for sym, pat in SYMBOL_PATTERNS.items() if pat.search(question)]
     return found or ["SPX", "SPY"]
+
+
+# Uppercase tokens that ARE tracked, so the ticker scan does not flag them.
+TRACKED_TOKENS = frozenset({"SPX", "SPY", "GSPC", "SP", "S"})
+
+
+def names_tracked(question: str) -> bool:
+    """True when the question explicitly names SPX or SPY."""
+    return any(pat.search(question) for pat in SYMBOL_PATTERNS.values())
+
+
+def detect_untracked(question: str) -> str | None:
+    """Name an instrument in the question that this app does not track.
+
+    Returns ``None`` for general market questions, which legitimately default
+    to the tracked instruments. Answering a GOOG question with SPX numbers
+    would be worse than saying the instrument is not covered, so anything
+    explicitly named and not tracked is reported.
+    """
+    for word, label in COMPANY_ALIASES.items():
+        if re.search(rf"\b{word}\b", question, re.I):
+            return label
+
+    for candidate in TICKER_RE.findall(question):
+        if len(candidate) >= 2 and candidate not in NOT_TICKERS and candidate not in TRACKED_TOKENS:
+            return candidate
+    return None
 
 
 def detect_intent(question: str) -> str:
@@ -191,6 +244,22 @@ class LocalEngine:
         if not instruments:
             return "No market data is loaded yet - refresh the dashboard and try again."
 
+        untracked = detect_untracked(question)
+        tracked = ", ".join(instruments)
+        if untracked and not names_tracked(question):
+            return (
+                f"This dashboard only tracks {tracked} — it has no data for "
+                f"**{untracked}**, so there is nothing here I can tell you about it. "
+                f"Answering with {tracked} numbers instead would be misleading.\n\n"
+                f"To follow other instruments, add them to `INSTRUMENTS` in "
+                f"`app/providers.py`."
+            )
+
+        prefix = ""
+        if untracked:
+            # A mixed question: answer the part we cover, flag the part we don't.
+            prefix = f"_Note: **{untracked}** is not tracked here, so this covers only {tracked}._\n\n"
+
         symbols = [s for s in detect_symbols(question) if s in instruments]
         if not symbols:
             symbols = list(instruments)
@@ -202,7 +271,7 @@ class LocalEngine:
 
         if not snapshot.get("live"):
             lines.insert(0, "**Synthetic demo data** - no live provider reachable.")
-        return "\n\n".join(line for line in lines if line)
+        return prefix + "\n\n".join(line for line in lines if line)
 
     def _for_symbol(self, intent: str, question: str, symbol: str, block: dict[str, Any]) -> str:
         quote = block.get("quote", {})

@@ -351,3 +351,63 @@ def test_no_fallback_note_when_the_requested_model_served(snapshot, tmp_path):
     result = _assistant(tmp_path, _Working()).ask("read the tape", snapshot, prefer="claude")
     assert result["model"] == result["requested_model"] == "claude-opus-5"
     assert "note" not in result
+
+
+# --------------------------------------------- instruments we do not track
+
+@pytest.mark.parametrize(
+    "question,expected",
+    [
+        ("what is GOOG value", "GOOG"),
+        ("how is AAPL doing", "AAPL"),
+        ("tesla price", "TSLA"),
+        ("what about nvidia", "NVDA"),
+        ("how is the nasdaq", "the Nasdaq"),
+    ],
+)
+def test_detect_untracked_names_the_instrument(question, expected):
+    from app.assistant import detect_untracked
+
+    assert detect_untracked(question) == expected
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "how is the market",
+        "what is the RSI",          # finance shorthand, not a ticker
+        "how far from the 200 day MA",
+        "compare SPX and SPY",
+        "what is YTD performance in USD",
+    ],
+)
+def test_detect_untracked_ignores_general_questions(question):
+    from app.assistant import detect_untracked
+
+    assert detect_untracked(question) is None
+
+
+def test_untracked_question_is_refused_not_answered_with_other_data(snapshot):
+    """Regression: 'what is GOOG value' returned SPX and SPY numbers."""
+    answer = LocalEngine().answer("what is GOOG value", snapshot, "")
+
+    assert "GOOG" in answer
+    assert "only tracks" in answer
+    # None of the tracked instruments' prices may appear.
+    for sym in ("SPX", "SPY"):
+        price = snapshot["instruments"][sym]["quote"]["price"]
+        assert f"{price:,.2f}" not in answer
+
+
+def test_mixed_question_answers_what_it_can_and_flags_the_rest(snapshot):
+    answer = LocalEngine().answer("compare nvidia and spy", snapshot, "")
+
+    assert "NVDA" in answer and "not tracked" in answer
+    spy_price = snapshot["instruments"]["SPY"]["quote"]["price"]
+    assert f"{spy_price:,.2f}" in answer  # the part we do cover is still answered
+
+
+def test_tracked_questions_are_unaffected(snapshot):
+    answer = LocalEngine().answer("what is SPY trading at", snapshot, "")
+    assert "not tracked" not in answer
+    assert "only tracks" not in answer
