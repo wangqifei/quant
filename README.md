@@ -52,13 +52,28 @@ any session, and a side-by-side metrics table.
 
 ### Two answer engines
 
-| | When it's used | What it does |
-|---|---|---|
-| **Local** | Always available. No key, no network. | Pattern-matches the question to an intent and answers straight from the computed metrics. Every number is reproducible from the same snapshot. |
-| **Claude** | When `ANTHROPIC_API_KEY` is set and `anthropic` is installed. | Sends the metrics and your context notes to `claude-opus-5` for free-form analysis. |
+Pick one with the **Auto / Claude / Local** selector under the composer:
 
-The local engine is the floor: if the Claude call fails for any reason, the
-answer degrades to local metrics with a warning rather than erroring out.
+| Mode | Behaviour |
+|---|---|
+| **Auto** (default) | Ask Claude when it is configured; fall back to local metrics with a note if not, or if the call fails. |
+| **Claude** | Always ask the model. If it is not configured or the call fails, you get an error saying why — never a local answer dressed up as a model answer. |
+| **Local** | Answer from the computed metrics. No API call, no key, works offline. Every number is reproducible from the same snapshot. |
+
+Answers are labelled with the engine, the model and how long the call took.
+
+**To enable the Claude engine** (this is the "server model"):
+
+```bash
+pip install -r requirements-assistant.txt   # needs Python 3.10+
+export ANTHROPIC_API_KEY=sk-ant-...         # in the shell that runs ./run.sh
+./run.sh
+```
+
+The key is read by the **server** process, not the browser, so it never
+reaches the page. Check it took effect at `/api/health`: `claude_available`
+should be `true`, and `claude_unavailable_reason` tells you what is missing
+when it is not.
 
 ## Metrics computed
 

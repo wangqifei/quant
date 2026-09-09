@@ -70,7 +70,10 @@
         <div class="thread" id="thread">
           <div class="msg assistant">
             <p>Ask about the price action — “how far is SPX from its 200-day?”, “what’s realized vol?”,
-               “SPY vs the index this year”. Answers are computed from the loaded snapshot.</p>
+               “SPY vs the index this year”.</p>
+            <p><strong>Auto</strong> asks the Claude model when it is configured and falls back to local
+               metrics otherwise. <strong>Claude</strong> always asks the model. <strong>Local</strong>
+               answers from the computed metrics with no API call.</p>
           </div>
         </div>
         <div class="chips" id="chips">
@@ -83,9 +86,14 @@
           <textarea id="question" rows="2" placeholder="Ask about the price…"
                     aria-label="Your question"></textarea>
           <div class="composer-foot">
-            <span class="engine-note" id="engine-note"></span>
+            <div class="segmented engines" id="engine-toggle" role="group" aria-label="Analysis engine">
+              <button type="button" data-engine="auto" class="active" title="Claude when configured, otherwise local">Auto</button>
+              <button type="button" data-engine="claude" title="Always ask the Claude model">Claude</button>
+              <button type="button" data-engine="local" title="Answer from the computed metrics only">Local</button>
+            </div>
             <button type="submit" class="btn primary" id="ask-btn">Ask</button>
           </div>
+          <span class="engine-note" id="engine-note"></span>
         </form>
       </div>
 

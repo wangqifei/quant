@@ -87,3 +87,43 @@ def test_delete_unknown_note_404(client):
 def test_context_rejects_blank_text(client):
     assert client.post("/api/context", json={"text": "  "}).status_code == 400
     assert client.post("/api/context", json={"text": ""}).status_code == 422
+
+
+def test_health_explains_why_claude_is_unavailable(client):
+    body = client.get("/api/health").json()["assistant"]
+    if body["claude_available"]:
+        assert body["claude_unavailable_reason"] is None
+    else:
+        assert body["claude_unavailable_reason"]
+
+
+def test_ask_accepts_the_claude_engine_name(client):
+    # Either it runs (key present) or it 503s with a reason - never a 422.
+    response = client.post("/api/ask", json={"question": "spy price", "engine": "claude"})
+    assert response.status_code in (200, 502, 503)
+    if response.status_code == 503:
+        assert response.json()["detail"]
+
+
+def test_ask_503s_when_claude_is_explicitly_requested_but_unavailable(client, monkeypatch):
+    from app import main as main_module
+
+    monkeypatch.setattr(
+        main_module.assistant.claude, "unavailable_reason", lambda: "ANTHROPIC_API_KEY is not set"
+    )
+    response = client.post("/api/ask", json={"question": "spy price", "engine": "claude"})
+    assert response.status_code == 503
+    assert "ANTHROPIC_API_KEY" in response.json()["detail"]
+
+
+def test_ask_502s_when_the_claude_call_fails(client, monkeypatch):
+    from app import main as main_module
+
+    monkeypatch.setattr(main_module.assistant.claude, "unavailable_reason", lambda: None)
+    def boom(*a, **k):
+        raise RuntimeError("upstream rate limit")
+    monkeypatch.setattr(main_module.assistant.claude, "answer", boom)
+
+    response = client.post("/api/ask", json={"question": "spy price", "engine": "claude"})
+    assert response.status_code == 502
+    assert "upstream rate limit" in response.json()["detail"]

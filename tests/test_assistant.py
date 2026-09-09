@@ -135,7 +135,8 @@ def test_context_store_prompt_text(store):
 
 def test_assistant_uses_local_when_claude_unavailable(snapshot, tmp_path):
     class NoClaude:
-        available = False
+        def unavailable_reason(self):
+            return "ANTHROPIC_API_KEY is not set in the server's environment"
 
     assistant = Assistant(settings=Settings(context_path=tmp_path / "c.json"), claude=NoClaude())
     result = assistant.ask("spy price", snapshot)
@@ -158,7 +159,8 @@ def test_claude_engine_reports_available_with_a_key(monkeypatch):
 
 def test_assistant_falls_back_to_local_when_claude_errors(snapshot, tmp_path):
     class BrokenClaude:
-        available = True
+        def unavailable_reason(self):
+            return None
 
         def answer(self, *args, **kwargs):
             raise RuntimeError("api exploded")
@@ -172,7 +174,8 @@ def test_assistant_falls_back_to_local_when_claude_errors(snapshot, tmp_path):
 
 def test_assistant_prefers_local_when_asked(snapshot, tmp_path):
     class LoudClaude:
-        available = True
+        def unavailable_reason(self):
+            raise AssertionError("should not be consulted for a local request")
 
         def answer(self, *args, **kwargs):
             raise AssertionError("should not be called")
@@ -185,7 +188,8 @@ def test_assistant_passes_context_and_history_to_claude(snapshot, tmp_path):
     seen = {}
 
     class RecordingClaude:
-        available = True
+        def unavailable_reason(self):
+            return None
 
         def answer(self, question, snap, context, history):
             seen.update(question=question, context=context, history=history)
@@ -213,3 +217,88 @@ def test_compact_snapshot_drops_full_history(snapshot):
     assert len(block["recent_closes"]) == 20
     assert set(block["recent_closes"][0]) == {"date", "close"}
     assert block["metrics"]["last"] > 0
+
+
+# ------------------------------------------------- explicit engine choice
+
+class _Unavailable:
+    def __init__(self, reason="no key configured"):
+        self.reason = reason
+
+    def unavailable_reason(self):
+        return self.reason
+
+
+class _Working:
+    def __init__(self, text="Claude says hello"):
+        self.text = text
+        self.calls = 0
+
+    def unavailable_reason(self):
+        return None
+
+    def answer(self, question, snap, context, history):
+        self.calls += 1
+        return self.text
+
+
+def _assistant(tmp_path, claude):
+    return Assistant(settings=Settings(context_path=tmp_path / "c.json"), claude=claude)
+
+
+def test_engine_claude_raises_when_unavailable(snapshot, tmp_path):
+    from app.assistant import EngineUnavailable
+
+    assistant = _assistant(tmp_path, _Unavailable("ANTHROPIC_API_KEY is not set"))
+    with pytest.raises(EngineUnavailable, match="ANTHROPIC_API_KEY"):
+        assistant.ask("spy price", snapshot, prefer="claude")
+
+
+def test_engine_claude_does_not_silently_fall_back_on_error(snapshot, tmp_path):
+    from app.assistant import AssistantError
+
+    class Broken(_Working):
+        def answer(self, *a, **k):
+            raise RuntimeError("rate limited")
+
+    with pytest.raises(AssistantError, match="rate limited"):
+        _assistant(tmp_path, Broken()).ask("spy price", snapshot, prefer="claude")
+
+
+def test_engine_claude_returns_the_model_answer(snapshot, tmp_path):
+    claude = _Working("SPX is extended versus its 200-day.")
+    result = _assistant(tmp_path, claude).ask("read the tape", snapshot, prefer="claude")
+
+    assert result["engine"] == "claude"
+    assert result["answer"] == "SPX is extended versus its 200-day."
+    assert claude.calls == 1
+
+
+def test_engine_local_never_consults_claude(snapshot, tmp_path):
+    class Exploding:
+        def unavailable_reason(self):
+            raise AssertionError("must not be consulted")
+
+    result = _assistant(tmp_path, Exploding()).ask("spy price", snapshot, prefer="local")
+    assert result["engine"] == "local"
+
+
+def test_auto_carries_the_reason_as_a_note(snapshot, tmp_path):
+    result = _assistant(tmp_path, _Unavailable("the `anthropic` package is not installed")).ask(
+        "spy price", snapshot, prefer="auto"
+    )
+    assert result["engine"] == "local"
+    assert "not installed" in result["note"]
+
+
+def test_unknown_engine_is_rejected(snapshot, tmp_path):
+    with pytest.raises(ValueError, match="unknown engine"):
+        _assistant(tmp_path, _Working()).ask("spy price", snapshot, prefer="gpt")
+
+
+def test_unavailable_reason_names_the_missing_key(monkeypatch):
+    pytest.importorskip("anthropic")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    reason = ClaudeEngine(Settings()).unavailable_reason()
+    assert "ANTHROPIC_API_KEY" in reason

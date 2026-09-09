@@ -8,6 +8,7 @@
     rangeDays: 252,
     history: [],   // [{role, content}] sent back for assistant continuity
     claude: false,
+    engine: "auto",
   };
 
   const $ = (id) => document.getElementById(id);
@@ -264,19 +265,33 @@
     if (!question.trim()) return;
     addMessage("user", question);
     state.history.push({ role: "user", content: question });
-    const pending = addMessage("assistant", "Analysing…", "pending");
+
+    const label = state.engine === "local" ? "Computing" : "Asking the model";
+    const pending = addMessage("assistant", `${label}…`, "pending");
+    const started = Date.now();
+    const ticker = setInterval(() => {
+      const secs = ((Date.now() - started) / 1000).toFixed(0);
+      pending.innerHTML =
+        `<div class="who">Analysis</div><p>${label}… <span class="elapsed">${secs}s</span></p>`;
+    }, 1000);
     $("ask-btn").disabled = true;
 
     try {
       const data = await api("/api/ask", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question, history: state.history.slice(-12, -1) }),
+        body: JSON.stringify({
+          question,
+          history: state.history.slice(-12, -1),
+          engine: state.engine,
+        }),
       });
+      const secs = ((Date.now() - started) / 1000).toFixed(1);
       pending.classList.remove("pending");
-      const footer = data.warning ? `\n\n_${data.warning}_` : "";
+      const footer = data.warning ? `\n\n_${data.warning}_` : data.note ? `\n\n_${data.note}_` : "";
       pending.innerHTML =
-        `<div class="who">Analysis · ${data.engine}${data.model ? " · " + escapeHtml(data.model) : ""}</div>` +
+        `<div class="who">Analysis · ${data.engine}` +
+        `${data.model ? " · " + escapeHtml(data.model) : ""} · ${secs}s</div>` +
         renderText(data.answer + footer);
       state.history.push({ role: "assistant", content: data.answer });
     } catch (err) {
@@ -284,6 +299,7 @@
       pending.innerHTML = `<div class="who">Error</div>${renderText(err.message)}`;
       state.history.pop();
     } finally {
+      clearInterval(ticker);
       $("ask-btn").disabled = false;
     }
   }
@@ -347,6 +363,14 @@
       }
     });
 
+    $("engine-toggle").addEventListener("click", (e) => {
+      const btn = e.target.closest("button");
+      if (!btn || btn.disabled) return;
+      state.engine = btn.dataset.engine;
+      [...e.currentTarget.children].forEach((b) => b.classList.toggle("active", b === btn));
+      updateEngineNote();
+    });
+
     $("chips").addEventListener("click", (e) => {
       const btn = e.target.closest("button");
       if (btn) askQuestion(btn.textContent.trim());
@@ -374,6 +398,24 @@
     });
   }
 
+  function updateEngineNote() {
+    const note = $("engine-note");
+    note.classList.remove("warn");
+    if (state.engine === "local") {
+      note.textContent = "Answers computed from the loaded metrics. No API call.";
+      return;
+    }
+    if (state.claude) {
+      note.textContent = `Claude · ${state.model || "configured"}`;
+      return;
+    }
+    note.classList.add("warn");
+    note.textContent =
+      state.engine === "claude"
+        ? `Claude unavailable — ${state.claudeReason || "not configured"}`
+        : `Falling back to local — ${state.claudeReason || "Claude not configured"}`;
+  }
+
   async function init() {
     wire();
     await loadMarket(false);
@@ -381,10 +423,16 @@
     try {
       const health = await api("/api/health");
       state.claude = health.assistant.claude_available;
-      $("engine-note").textContent = state.claude
-        ? `Claude (${health.assistant.model})`
-        : "Local metrics engine · set ANTHROPIC_API_KEY for free-form analysis";
+      state.model = health.assistant.model;
+      state.claudeReason = health.assistant.claude_unavailable_reason;
+      if (!state.claude) {
+        // Leave the button clickable so the reason is discoverable, but make
+        // it obvious that it will not answer.
+        $("engine-toggle").querySelector('[data-engine="claude"]').title =
+          state.claudeReason || "Claude is not configured";
+      }
     } catch (_) { /* health is advisory only */ }
+    updateEngineNote();
   }
 
   init();

@@ -146,7 +146,11 @@ body {
 }
 .composer textarea:focus { outline: none; border-color: var(--accent); }
 .composer-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-.engine-note { font-size: 11px; color: var(--muted); }
+.engine-note { font-size: 11px; color: var(--muted); line-height: 1.35; }
+.engine-note.warn { color: var(--warn); }
+.segmented.engines button { padding: 4px 9px; font-size: 11px; }
+.segmented.engines button:disabled { opacity: 0.4; cursor: not-allowed; }
+.msg .elapsed { font-variant-numeric: tabular-nums; }
 
 .hint { margin: 0; font-size: 12px; color: var(--muted); }
 .notes { list-style: none; margin: 0; padding: 0; overflow-y: auto; flex: 1;

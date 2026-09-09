@@ -10,7 +10,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from . import analytics
-from .assistant import Assistant
+from .assistant import Assistant, AssistantError, EngineUnavailable
 from .config import ROOT, settings
 from .market import MarketService
 from .providers import INSTRUMENTS, ProviderError
@@ -27,7 +27,7 @@ assistant = Assistant(settings=settings)
 class AskRequest(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
     history: list[dict[str, str]] = Field(default_factory=list, max_length=20)
-    engine: str = Field(default="auto", pattern="^(auto|local)$")
+    engine: str = Field(default="auto", pattern="^(auto|claude|local)$")
 
 
 class NoteRequest(BaseModel):
@@ -40,10 +40,17 @@ def health() -> dict:
         "status": "ok",
         "instruments": list(INSTRUMENTS),
         "providers": [p.name for p in market.providers],
-        "assistant": {
-            "claude_available": assistant.claude.available,
-            "model": settings.anthropic_model if assistant.claude.available else None,
-        },
+        "assistant": _assistant_health(),
+    }
+
+
+def _assistant_health() -> dict:
+    """Claude availability, derived from a single source of truth."""
+    reason = assistant.claude.unavailable_reason()
+    return {
+        "claude_available": reason is None,
+        "claude_unavailable_reason": reason,
+        "model": settings.anthropic_model if reason is None else None,
     }
 
 
@@ -84,6 +91,12 @@ def ask(request: AskRequest) -> dict:
             history=request.history,
             prefer=request.engine,
         )
+    except EngineUnavailable as exc:
+        # The caller asked for Claude specifically; say why it cannot run
+        # rather than quietly answering with a different engine.
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except AssistantError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 

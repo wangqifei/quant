@@ -298,13 +298,23 @@ class ClaudeEngine:
 
     @property
     def available(self) -> bool:
-        if not self.settings.has_api_key:
-            return False
+        return self.unavailable_reason() is None
+
+    def unavailable_reason(self) -> str | None:
+        """Why the Claude engine cannot run, or ``None`` when it can.
+
+        Specific enough to act on: the two failure modes need different fixes.
+        """
         try:
             import anthropic  # noqa: F401
         except ImportError:
-            return False
-        return True
+            return (
+                "the `anthropic` package is not installed - "
+                "`pip install -r requirements-assistant.txt` (needs Python 3.10+)"
+            )
+        if not self.settings.has_api_key:
+            return "ANTHROPIC_API_KEY is not set in the server's environment"
+        return None
 
     def _get_client(self):
         if self._client is None:
@@ -332,14 +342,18 @@ class ClaudeEngine:
 
         try:
             response = self._create(client, kwargs)
-        except anthropic.BadRequestError as exc:
-            # The refusal-fallback beta is optional; drop it and retry once.
-            if self._send_fallbacks and "fallback" in str(exc).lower():
-                log.warning("retrying without server-side fallbacks: %s", exc)
-                self._send_fallbacks = False
-                response = self._create(client, kwargs)
-            else:
+        except (anthropic.BadRequestError, TypeError) as exc:
+            # The refusal-fallback beta is optional. A BadRequestError means the
+            # server declined it; a TypeError means the installed SDK has no
+            # such parameter. Either way, drop it and retry once.
+            retryable = self._send_fallbacks and (
+                "fallback" in str(exc).lower() or isinstance(exc, TypeError)
+            )
+            if not retryable:
                 raise
+            log.warning("retrying without server-side fallbacks: %s", exc)
+            self._send_fallbacks = False
+            response = self._create(client, kwargs)
 
         if response.stop_reason == "refusal":
             category = getattr(response.stop_details, "category", None)
@@ -388,6 +402,10 @@ class AssistantError(RuntimeError):
     """Raised when no engine can produce an answer."""
 
 
+class EngineUnavailable(RuntimeError):
+    """Raised when the explicitly requested engine cannot run."""
+
+
 @dataclass
 class Assistant:
     """Front door for the query panel."""
@@ -414,23 +432,51 @@ class Assistant:
         question = question.strip()
         if not question:
             raise ValueError("question is empty")
+        if prefer not in ("auto", "claude", "local"):
+            raise ValueError(f"unknown engine {prefer!r}")
         context = self.store.as_prompt_text()
 
-        use_claude = prefer != "local" and self.claude.available
-        if use_claude:
-            try:
-                text = self.claude.answer(question, snapshot, context, history or [])
-                return {"answer": text, "engine": "claude", "model": self.settings.anthropic_model}
-            except Exception as exc:  # noqa: BLE001 - always degrade to the local engine
-                log.warning("claude engine failed, using local: %s", exc)
-                return {
-                    "answer": self.local.answer(question, snapshot, context),
-                    "engine": "local",
-                    "warning": f"Claude unavailable ({exc}); answered from local metrics.",
-                }
+        if prefer == "local":
+            return self._local_result(question, snapshot, context)
 
-        return {
+        reason = self.claude.unavailable_reason()
+        if reason is not None:
+            # An explicit request for Claude must not be answered by a
+            # different engine pretending to be it.
+            if prefer == "claude":
+                raise EngineUnavailable(reason)
+            return self._local_result(question, snapshot, context, note=reason)
+
+        try:
+            text = self.claude.answer(question, snapshot, context, history or [])
+        except Exception as exc:  # noqa: BLE001 - the SDK raises many types
+            log.warning("claude engine failed: %s", exc)
+            if prefer == "claude":
+                raise AssistantError(str(exc)) from exc
+            return self._local_result(
+                question,
+                snapshot,
+                context,
+                warning=f"Claude unavailable ({exc}); answered from local metrics.",
+            )
+
+        return {"answer": text, "engine": "claude", "model": self.settings.anthropic_model}
+
+    def _local_result(
+        self,
+        question: str,
+        snapshot: dict[str, Any],
+        context: str,
+        *,
+        note: str | None = None,
+        warning: str | None = None,
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {
             "answer": self.local.answer(question, snapshot, context),
             "engine": "local",
-            "note": None if self.claude.available else "Set ANTHROPIC_API_KEY for free-form analysis.",
         }
+        if note:
+            result["note"] = note
+        if warning:
+            result["warning"] = warning
+        return result
