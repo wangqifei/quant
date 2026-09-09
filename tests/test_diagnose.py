@@ -177,12 +177,13 @@ def test_key_shape_flags_truncation_and_wrong_prefix():
     assert any("sk-ant-" in p for p in problems)
 
 
-def test_probe_model_reports_a_missing_key(capsys, monkeypatch):
+def test_probe_model_reports_a_missing_key(capsys, monkeypatch, tmp_path):
     pytest.importorskip("anthropic")
     monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    monkeypatch.setenv("ANTHROPIC_CONFIG_DIR", str(tmp_path / "empty"))
     assert diagnose.probe_model() == 2
-    assert "not set in THIS shell" in capsys.readouterr().out
+    assert "No Anthropic credentials found" in capsys.readouterr().out
 
 
 def test_probe_model_never_prints_the_whole_key(capsys, monkeypatch):
@@ -214,3 +215,49 @@ def test_key_shape_calls_out_placeholder_text(value):
 
 def test_a_real_looking_key_is_not_called_a_placeholder():
     assert diagnose._key_shape("sk-ant-api03-" + "a" * 90) == []
+
+
+def test_probe_model_reports_no_credentials_and_offers_both_paths(capsys, monkeypatch, tmp_path):
+    pytest.importorskip("anthropic")
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+    monkeypatch.setenv("ANTHROPIC_CONFIG_DIR", str(tmp_path / "empty"))
+
+    assert diagnose.probe_model() == 2
+    out = capsys.readouterr().out
+    assert "ant auth login" in out          # subscription/OAuth path
+    assert "ANTHROPIC_API_KEY" in out       # API key path
+
+
+def test_probe_model_warns_that_a_key_shadows_an_oauth_profile(capsys, monkeypatch, tmp_path):
+    pytest.importorskip("anthropic")
+    creds = tmp_path / "credentials"
+    creds.mkdir(parents=True)
+    (creds / "default.json").write_text("{}")
+    monkeypatch.setenv("ANTHROPIC_CONFIG_DIR", str(tmp_path))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-" + "a" * 90)
+
+    diagnose.probe_model()
+    out = capsys.readouterr().out
+    assert "profile is" in out and "being ignored" in out
+    assert "unset ANTHROPIC_API_KEY" in out
+
+
+def test_probe_model_warns_about_an_empty_key(capsys, monkeypatch, tmp_path):
+    pytest.importorskip("anthropic")
+    empty = tmp_path / "empty"
+    (empty / "credentials").mkdir(parents=True)  # exists but holds no profile
+    monkeypatch.setenv("ANTHROPIC_CONFIG_DIR", str(empty))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+    diagnose.probe_model()
+    assert "set but EMPTY" in capsys.readouterr().out
+
+
+def test_probe_model_survives_a_broken_config_dir(capsys, monkeypatch, tmp_path):
+    """A bad ANTHROPIC_CONFIG_DIR must report, not raise."""
+    pytest.importorskip("anthropic")
+    monkeypatch.setenv("ANTHROPIC_CONFIG_DIR", str(tmp_path / "does-not-exist"))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-" + "a" * 90)
+    rc = diagnose.probe_model()
+    assert rc == 1
+    assert "Traceback" not in capsys.readouterr().out

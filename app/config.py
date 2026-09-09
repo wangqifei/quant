@@ -58,5 +58,32 @@ class Settings:
     def has_api_key(self) -> bool:
         return bool(os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"))
 
+    @property
+    def anthropic_profile_dir(self) -> Path:
+        """Where the `ant` CLI stores OAuth profiles."""
+        configured = os.environ.get("ANTHROPIC_CONFIG_DIR")
+        if configured:
+            return Path(configured)
+        if os.name == "nt":
+            return Path(os.environ.get("APPDATA", "~")).expanduser() / "Anthropic"
+        return Path.home() / ".config" / "anthropic"
+
+    @property
+    def has_oauth_profile(self) -> bool:
+        """True when `ant auth login` has stored credentials the SDK can use.
+
+        A bare ``Anthropic()`` picks these up with no environment variable, so
+        an API key is not the only way to authenticate.
+        """
+        credentials = self.anthropic_profile_dir / "credentials"
+        try:
+            return credentials.is_dir() and any(credentials.glob("*.json"))
+        except OSError:
+            return False
+
+    @property
+    def has_credentials(self) -> bool:
+        return self.has_api_key or self.has_oauth_profile
+
 
 settings = Settings()

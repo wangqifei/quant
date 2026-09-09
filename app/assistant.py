@@ -429,8 +429,12 @@ class ClaudeEngine:
                 "the `anthropic` package is not installed - "
                 "`pip install -r requirements-assistant.txt` (needs Python 3.10+)"
             )
-        if not self.settings.has_api_key:
-            return "ANTHROPIC_API_KEY is not set in the server's environment"
+        if not self.settings.has_credentials:
+            return (
+                "no Anthropic credentials found - either export ANTHROPIC_API_KEY "
+                "in the shell that starts the server, or run `ant auth login` to "
+                "sign in with your Anthropic account"
+            )
         return self._auth_error
 
     def _get_client(self):

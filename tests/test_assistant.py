@@ -411,3 +411,29 @@ def test_tracked_questions_are_unaffected(snapshot):
     answer = LocalEngine().answer("what is SPY trading at", snapshot, "")
     assert "not tracked" not in answer
     assert "only tracks" not in answer
+
+
+def test_oauth_profile_counts_as_credentials(monkeypatch, tmp_path):
+    """`ant auth login` is a valid alternative to an API key."""
+    pytest.importorskip("anthropic")
+    creds = tmp_path / "credentials"
+    creds.mkdir(parents=True)
+    (creds / "default.json").write_text("{}")
+    monkeypatch.setenv("ANTHROPIC_CONFIG_DIR", str(tmp_path))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+
+    settings = Settings()
+    assert settings.has_api_key is False
+    assert settings.has_credentials is True
+    assert ClaudeEngine(settings).unavailable_reason() is None
+
+
+def test_no_credentials_at_all_mentions_both_options(monkeypatch, tmp_path):
+    pytest.importorskip("anthropic")
+    monkeypatch.setenv("ANTHROPIC_CONFIG_DIR", str(tmp_path / "empty"))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_AUTH_TOKEN", raising=False)
+
+    reason = ClaudeEngine(Settings()).unavailable_reason()
+    assert "ant auth login" in reason and "ANTHROPIC_API_KEY" in reason

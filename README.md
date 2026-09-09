@@ -34,9 +34,19 @@ export ANTHROPIC_API_KEY='<paste your real key here>'
 ./run.sh
 ```
 
-Get the key from <https://console.anthropic.com/settings/keys>. It is a long
-string beginning `sk-ant-api03-`; if what you exported is short, you have
-pasted a placeholder rather than the key itself.
+Two ways to authenticate — an API key is not the only option:
+
+| | How | Notes |
+|---|---|---|
+| **Sign in with your account** | `ant auth login` | Stores an OAuth profile the SDK picks up with no environment variable. Nothing to paste or rotate. Install: `brew install anthropics/tap/ant` |
+| **API key** | `export ANTHROPIC_API_KEY=…` | From <https://console.anthropic.com/settings/keys>. A long string beginning `sk-ant-api03-` |
+
+**A set `ANTHROPIC_API_KEY` always wins over a profile** — even when empty. If
+you sign in with `ant auth login`, `unset ANTHROPIC_API_KEY` (unset, not
+blank) or the profile is silently ignored.
+
+`python -m app.diagnose --probe-model` prints which credential source the SDK
+will actually use, and warns when one is shadowing another.
 
 Skip this and everything still runs; the panel just stays on the local engine.
 

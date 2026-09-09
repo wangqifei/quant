@@ -116,14 +116,43 @@ def probe_model() -> int:
         print("  pip install -r requirements-assistant.txt   (needs Python 3.10+)")
         return 2
 
-    raw = os.environ.get("ANTHROPIC_API_KEY") or ""
-    token = os.environ.get("ANTHROPIC_AUTH_TOKEN") or ""
-    if not raw and not token:
-        print("ANTHROPIC_API_KEY is not set in THIS shell.")
-        print("  The server reads it from its own environment, so it must be exported")
-        print("  in the same shell that runs ./run.sh:")
-        print("    export ANTHROPIC_API_KEY='<paste the real key>'")
+    raw = os.environ.get("ANTHROPIC_API_KEY")
+    token = os.environ.get("ANTHROPIC_AUTH_TOKEN")
+    has_profile = settings.has_oauth_profile
+
+    # Credential precedence: API key, then auth token, then an `ant` profile.
+    # A set key wins even when empty, which silently shadows a working profile.
+    if raw is not None:
+        source = "ANTHROPIC_API_KEY"
+    elif token is not None:
+        source = "ANTHROPIC_AUTH_TOKEN"
+    elif has_profile:
+        source = "ant auth login profile"
+    else:
+        source = None
+
+    print(f"OAuth profile ({settings.anthropic_profile_dir}): {'present' if has_profile else 'none'}")
+    print(f"Credential the SDK will use: {source or 'NONE'}\n")
+
+    if source is None:
+        print("No Anthropic credentials found. Two options:")
+        print("  1. Sign in with your Anthropic account (no key to manage):")
+        print("       ant auth login")
+        print("  2. Or export an API key in the shell that runs ./run.sh:")
+        print("       export ANTHROPIC_API_KEY='<paste the real key>'")
         return 2
+
+    if raw is not None and has_profile:
+        print("WARNING: ANTHROPIC_API_KEY is set, so your `ant auth login` profile is")
+        print("  being ignored. To use the profile instead, unset the key entirely:")
+        print("    unset ANTHROPIC_API_KEY")
+        print("  (an empty value still wins its slot - it must be unset, not blank)\n")
+    if raw is not None and not raw.strip():
+        print("WARNING: ANTHROPIC_API_KEY is set but EMPTY. That still takes precedence")
+        print("  and authenticates with an empty key. Run: unset ANTHROPIC_API_KEY\n")
+    if raw and token:
+        print("WARNING: both ANTHROPIC_API_KEY and ANTHROPIC_AUTH_TOKEN are set. The SDK")
+        print("  sends both and the API rejects that. Unset one.\n")
 
     if raw:
         stripped = raw.strip()
@@ -134,12 +163,12 @@ def probe_model() -> int:
             print(f"  PROBLEM: the value {problem}")
         if not problems:
             print("  shape looks normal")
-    if token:
-        print("ANTHROPIC_AUTH_TOKEN is also set - it takes precedence over the API key")
     print(f"Configured model: {settings.anthropic_model}\n")
 
-    client = anthropic.Anthropic()
     try:
+        # Construction can fail on its own (e.g. a bad ANTHROPIC_CONFIG_DIR),
+        # so it belongs inside the same guard as the call.
+        client = anthropic.Anthropic()
         client.models.list(limit=1)
     except anthropic.AuthenticationError:
         print("AUTH FAILED (401) - the API rejected this key.")
@@ -147,6 +176,8 @@ def probe_model() -> int:
         print("   - it was revoked, or belongs to a different/deleted workspace")
         print("   - it was copied incompletely, or with quotes/whitespace (see above)")
         print("   - an old key is still exported in this shell, shadowing a new one")
+        print("  If you have a Claude subscription, `ant auth login` signs in with your")
+        print("  account instead of a purchased key - then `unset ANTHROPIC_API_KEY`.")
         print("  Get a key at https://console.anthropic.com/settings/keys - it is a")
         print("  long string starting 'sk-ant-api03-'. Then, in the SAME shell:")
         print("    export ANTHROPIC_API_KEY='<paste the real key>'")
