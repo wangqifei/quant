@@ -492,6 +492,7 @@ class ClaudeEngine:
             text=text or "The model returned an empty response.",
             # response.model names what actually served the request.
             model=getattr(response, "model", None) or self.settings.anthropic_model,
+            usage=usage_dict(getattr(response, "usage", None)),
         )
 
     def _create(self, client, kwargs: dict[str, Any]):
@@ -532,7 +533,7 @@ def _compact_snapshot(snapshot: dict[str, Any]) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class ClaudeReply:
-    """A model answer plus the model that actually produced it.
+    """A model answer, the model that produced it, and what it cost.
 
     ``model`` comes from the API response, not from configuration: with
     server-side refusal fallbacks enabled, a declined request can be served by
@@ -541,6 +542,34 @@ class ClaudeReply:
 
     text: str
     model: str
+    usage: dict[str, int] = field(default_factory=dict)
+
+
+def usage_dict(usage) -> dict[str, int]:
+    """Token counts from an API response, as plain ints."""
+    out: dict[str, int] = {}
+    for name in ("input_tokens", "output_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"):
+        value = getattr(usage, name, None)
+        if isinstance(value, int):
+            out[name] = value
+    return out
+
+
+def estimate_cost_usd(usage: dict[str, int], rates: tuple[float, float] | None) -> float | None:
+    """Rough spend for one call from published list prices.
+
+    An estimate, not a bill: rates are a cached table and the console is the
+    source of truth. Cache reads bill at ~0.1x input, writes at ~1.25x.
+    """
+    if not rates or not usage:
+        return None
+    price_in, price_out = rates
+    million = 1_000_000
+    cost = usage.get("input_tokens", 0) * price_in / million
+    cost += usage.get("output_tokens", 0) * price_out / million
+    cost += usage.get("cache_read_input_tokens", 0) * price_in * 0.1 / million
+    cost += usage.get("cache_creation_input_tokens", 0) * price_in * 1.25 / million
+    return cost
 
 
 class AssistantError(RuntimeError):
@@ -552,10 +581,37 @@ class EngineUnavailable(RuntimeError):
 
 
 @dataclass
+class SpendTracker:
+    """Running total for this server process, so cost is visible as you use it."""
+
+    calls: int = 0
+    total_usd: float = 0.0
+    input_tokens: int = 0
+    output_tokens: int = 0
+
+    def record(self, usage: dict[str, int], cost: float | None) -> None:
+        self.calls += 1
+        self.input_tokens += usage.get("input_tokens", 0)
+        self.output_tokens += usage.get("output_tokens", 0)
+        if cost:
+            self.total_usd += cost
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "calls": self.calls,
+            "total_usd": self.total_usd,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "avg_usd_per_call": self.total_usd / self.calls if self.calls else None,
+        }
+
+
+@dataclass
 class Assistant:
     """Front door for the query panel."""
 
     settings: Settings = field(default_factory=lambda: default_settings)
+    spend: SpendTracker = field(default_factory=SpendTracker)
     local: LocalEngine = field(default_factory=LocalEngine)
     claude: ClaudeEngine | None = None
     store: ContextStore | None = None
@@ -606,11 +662,18 @@ class Assistant:
             )
 
         requested = self.settings.anthropic_model
+        usage = getattr(reply, "usage", {}) or {}
+        cost = estimate_cost_usd(usage, self.settings.rates_for(reply.model))
+        self.spend.record(usage, cost)
         result: dict[str, Any] = {
             "answer": reply.text,
             "engine": "claude",
             "model": reply.model,
             "requested_model": requested,
+            "usage": usage,
+            "cost_usd": cost,
+            "session_cost_usd": self.spend.total_usd,
+            "session_calls": self.spend.calls,
         }
         if reply.model != requested:
             # A refusal fallback re-routed this request; say so rather than

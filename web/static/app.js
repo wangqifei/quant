@@ -291,9 +291,14 @@
       const footer = data.warning ? `\n\n_${data.warning}_` : data.note ? `\n\n_${data.note}_` : "";
       // data.model is the model that actually served the request, which can
       // differ from the configured one when a refusal fallback fires.
+      const cost =
+        data.cost_usd != null
+          ? ` · $${data.cost_usd.toFixed(4)}` +
+            (data.session_cost_usd != null ? ` (session $${data.session_cost_usd.toFixed(3)})` : "")
+          : "";
       pending.innerHTML =
         `<div class="who">Analysis · ${data.engine}` +
-        `${data.model ? " · " + escapeHtml(data.model) : ""} · ${secs}s</div>` +
+        `${data.model ? " · " + escapeHtml(data.model) : ""} · ${secs}s${cost}</div>` +
         renderText(data.answer + footer);
       state.history.push({ role: "assistant", content: data.answer });
     } catch (err) {

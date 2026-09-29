@@ -437,3 +437,64 @@ def test_no_credentials_at_all_mentions_both_options(monkeypatch, tmp_path):
 
     reason = ClaudeEngine(Settings()).unavailable_reason()
     assert "ant auth login" in reason and "ANTHROPIC_API_KEY" in reason
+
+
+# ------------------------------------------------------------ spend tracking
+
+def test_estimate_cost_uses_published_rates():
+    from app.assistant import estimate_cost_usd
+
+    # 1M input + 1M output on Opus 5 list prices = $5 + $25
+    cost = estimate_cost_usd({"input_tokens": 1_000_000, "output_tokens": 1_000_000}, (5.0, 25.0))
+    assert cost == pytest.approx(30.0)
+
+
+def test_estimate_cost_discounts_cache_reads():
+    from app.assistant import estimate_cost_usd
+
+    plain = estimate_cost_usd({"input_tokens": 1_000_000}, (5.0, 25.0))
+    cached = estimate_cost_usd({"cache_read_input_tokens": 1_000_000}, (5.0, 25.0))
+    assert cached == pytest.approx(plain * 0.1)
+
+
+def test_estimate_cost_is_none_without_rates():
+    from app.assistant import estimate_cost_usd
+
+    assert estimate_cost_usd({"input_tokens": 100}, None) is None
+    assert estimate_cost_usd({}, (5.0, 25.0)) is None
+
+
+def test_ask_reports_usage_and_accumulates_spend(snapshot, tmp_path):
+    class Metered:
+        def unavailable_reason(self):
+            return None
+
+        def answer(self, *a, **k):
+            return ClaudeReply(
+                text="ok",
+                model="claude-opus-5",
+                usage={"input_tokens": 4000, "output_tokens": 800},
+            )
+
+    assistant = _assistant(tmp_path, Metered())
+    first = assistant.ask("q1", snapshot, prefer="claude")
+    second = assistant.ask("q2", snapshot, prefer="claude")
+
+    # 4000 * $5/M + 800 * $25/M = $0.02 + $0.02
+    assert first["cost_usd"] == pytest.approx(0.04)
+    assert first["usage"]["input_tokens"] == 4000
+    assert second["session_cost_usd"] == pytest.approx(0.08)
+    assert second["session_calls"] == 2
+
+
+def test_spend_survives_an_unpriced_model(snapshot, tmp_path):
+    class Unknown:
+        def unavailable_reason(self):
+            return None
+
+        def answer(self, *a, **k):
+            return ClaudeReply(text="ok", model="some-future-model", usage={"input_tokens": 10})
+
+    result = _assistant(tmp_path, Unknown()).ask("q", snapshot, prefer="claude")
+    assert result["cost_usd"] is None
+    assert result["session_calls"] == 1

@@ -9,6 +9,30 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 
 
+# Published list prices, USD per million tokens (input, output).
+# Cached 2026-06-24 - prices change, so treat any cost figure derived from
+# this as an estimate and check the console for actual billing. Override a
+# model's rates with QUANT_PRICE_INPUT / QUANT_PRICE_OUTPUT.
+MODEL_PRICING_USD_PER_MTOK: dict[str, tuple[float, float]] = {
+    "claude-opus-5": (5.0, 25.0),
+    "claude-opus-4-8": (5.0, 25.0),
+    "claude-opus-4-7": (5.0, 25.0),
+    "claude-sonnet-5": (2.0, 10.0),
+    "claude-sonnet-4-6": (3.0, 15.0),
+    "claude-haiku-4-5": (1.0, 5.0),
+}
+
+
+def _float(name: str, default: float | None) -> float | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
 def _int(name: str, default: int) -> int:
     try:
         return int(os.environ.get(name, default))
@@ -53,6 +77,17 @@ class Settings:
     # Assistant
     anthropic_model: str = os.environ.get("ANTHROPIC_MODEL", "claude-opus-5")
     anthropic_max_tokens: int = _int("ANTHROPIC_MAX_TOKENS", 16000)
+    price_input: float | None = _float("QUANT_PRICE_INPUT", None)
+    price_output: float | None = _float("QUANT_PRICE_OUTPUT", None)
+
+    def rates_for(self, model: str) -> tuple[float, float] | None:
+        """(input, output) USD per million tokens, or None if unknown."""
+        listed = MODEL_PRICING_USD_PER_MTOK.get(model)
+        inp = self.price_input if self.price_input is not None else (listed[0] if listed else None)
+        out = self.price_output if self.price_output is not None else (listed[1] if listed else None)
+        if inp is None or out is None:
+            return None
+        return inp, out
 
     @property
     def has_api_key(self) -> bool:

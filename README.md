@@ -100,6 +100,27 @@ newline, truncation), then authenticates against the models endpoint — which
 validates credentials without generating any tokens — and confirms the
 configured model is available to your account. It never prints the whole key.
 
+#### What does it cost to run?
+
+Each answer's header shows the tokens and estimated cost, with a running
+session total; `/api/health` reports the same under `spend`.
+
+One question sends roughly 3k input tokens (the metrics snapshot plus your
+context notes) and returns several hundred to a couple of thousand output
+tokens, thinking included. At published list prices that is about:
+
+| Model | Per question | $5 of credit |
+|---|---|---|
+| `claude-opus-5` (default) | ~$0.04 | ~125 questions |
+| `claude-sonnet-5` | ~$0.016 | ~310 questions |
+| `claude-haiku-4-5` | ~$0.008 | ~625 questions |
+
+Switch with `ANTHROPIC_MODEL`. Costs are **estimates** from a rate table in
+`app/config.py` (cached 2026-06-24) — override with `QUANT_PRICE_INPUT` /
+`QUANT_PRICE_OUTPUT`, and treat the console as the source of truth for
+billing. The local engine costs nothing, so leave the selector on **Local**
+for routine metric questions and use the model when you want narration.
+
 #### Which model am I querying?
 
 `claude-opus-5` by default. Override with `ANTHROPIC_MODEL`.

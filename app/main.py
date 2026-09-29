@@ -41,6 +41,7 @@ def health() -> dict:
         "instruments": list(INSTRUMENTS),
         "providers": [p.name for p in market.providers],
         "assistant": _assistant_health(),
+        "spend": assistant.spend.to_dict(),
     }
 
 
