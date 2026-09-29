@@ -151,6 +151,24 @@ therefore understates gap risk around news — the answer says so every time.
 All of it lives in `app/analytics.py` as pure functions over a bar list, so
 each number is unit-testable and reproducible.
 
+**Any window, not just the defaults.** Ask for "SPX 30 day moving average",
+"标普30日均线", "MA30", "EMA 20", "90天波动率" or "RSI(7)" and that exact window
+is computed from the loaded bars. Questions can be in English or Chinese.
+
+### Auditing the numbers
+
+```bash
+python -m app.report                                 # both instruments
+python -m app.report --symbol SPX --windows 5,30,100 # your own windows
+```
+
+Prints every indicator — SMA and EMA for each window, realized volatility,
+RSI 7/14/21, returns, 52-week range, drawdown, next-session range — and
+recomputes each one with an independent pandas implementation. The command
+exits non-zero if any value disagrees. Compare its output with your charting
+tool on the same day's data; small differences in EMA/RSI between tools come
+from how the first value is seeded and shrink as history lengthens.
+
 ## Data sources
 
 Tried in order; the first that returns usable data wins.

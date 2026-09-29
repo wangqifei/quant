@@ -498,3 +498,101 @@ def test_spend_survives_an_unpriced_model(snapshot, tmp_path):
     result = _assistant(tmp_path, Unknown()).ask("q", snapshot, prefer="claude")
     assert result["cost_usd"] is None
     assert result["session_calls"] == 1
+
+
+# ------------------------------------------------- requested windows (regression)
+
+@pytest.fixture
+def full_snapshot():
+    return MarketService(Settings(), providers=[DemoProvider()]).snapshot(history=5000)
+
+
+@pytest.mark.parametrize(
+    "question,window",
+    [
+        ("spx 30 day moving average", 30),
+        ("spx 100-day moving average", 100),
+        ("标普30日均线是多少", 30),
+        ("标普10天移动平均", 10),
+        ("MA30", 30),
+        ("EMA 20", 20),
+        ("标普 RSI(7)", 7),
+        ("spx 90d vol", 90),
+        ("how is the market", None),
+    ],
+)
+def test_requested_window(question, window):
+    from app.assistant import requested_window
+
+    assert requested_window(question) == window
+
+
+@pytest.mark.parametrize(
+    "question,intent",
+    [
+        ("标普30日均线是多少", "moving_average"),
+        ("标普的波动率", "volatility"),
+        ("标普 RSI", "rsi"),
+        ("标普今年以来的涨幅", "performance"),
+        ("预测明天标普的区间", "forecast"),
+        ("标普最大回撤", "drawdown"),
+    ],
+)
+def test_chinese_intents(question, intent):
+    assert detect_intent(question) == intent
+
+
+def test_chinese_index_name_is_recognised():
+    assert detect_symbols("标普30日均线") == ["SPX"]
+
+
+def test_different_ma_windows_give_different_answers(full_snapshot):
+    """Regression: every window returned the same SMA 20/50/200 list."""
+    engine = LocalEngine()
+    answers = {w: engine.answer(f"spx {w} day moving average", full_snapshot, "") for w in (10, 30, 100)}
+    assert len(set(answers.values())) == 3
+    from app.analytics import sma
+
+    closes = [b["close"] for b in full_snapshot["instruments"]["SPX"]["bars"]]
+    for w, text in answers.items():
+        assert f"SMA{w} {sma(closes, w):,.2f}" in text
+
+
+def test_chinese_ma_question_computes_the_asked_window(full_snapshot):
+    from app.analytics import sma
+
+    closes = [b["close"] for b in full_snapshot["instruments"]["SPX"]["bars"]]
+    answer = LocalEngine().answer("标普30日均线是多少", full_snapshot, "")
+    assert f"SMA30 {sma(closes, 30):,.2f}" in answer
+
+
+def test_ema_is_computed_when_asked(full_snapshot):
+    from app.analytics import ema
+
+    closes = [b["close"] for b in full_snapshot["instruments"]["SPX"]["bars"]]
+    answer = LocalEngine().answer("spx EMA 20", full_snapshot, "")
+    assert f"EMA20 {ema(closes, 20):,.2f}" in answer
+
+
+def test_volatility_and_rsi_follow_the_asked_window(full_snapshot):
+    from app.analytics import realized_vol, rsi
+
+    closes = [b["close"] for b in full_snapshot["instruments"]["SPX"]["bars"]]
+    vol = LocalEngine().answer("spx 90 day volatility", full_snapshot, "")
+    assert f"90-day {realized_vol(closes, 90):,.2f}%" in vol
+    r = LocalEngine().answer("spx RSI(7)", full_snapshot, "")
+    assert f"7-day RSI is {rsi(closes, 7):,.2f}" in r
+
+
+def test_window_longer_than_history_says_so(full_snapshot):
+    answer = LocalEngine().answer("spx 900 day moving average", full_snapshot, "")
+    assert "needs 900 sessions" in answer
+
+
+def test_model_payload_carries_the_requested_indicator(full_snapshot):
+    from app.assistant import _requested_indicators
+
+    block = _requested_indicators("标普30日均线", full_snapshot)
+    assert block["SPX"]["window"] == 30
+    assert block["SPX"]["sma30"] is not None
+    assert _requested_indicators("how is the market", full_snapshot) == {}

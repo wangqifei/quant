@@ -82,7 +82,9 @@ def get_symbol(symbol: str, refresh: bool = False, history: int = 260) -> dict:
 @app.post("/api/ask")
 def ask(request: AskRequest) -> dict:
     try:
-        snapshot = market.snapshot()
+        # Full history, so a long window (e.g. a 250-day average) is computed
+        # from everything loaded rather than a truncated display slice.
+        snapshot = market.snapshot(history=5000)
     except ProviderError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
     try:

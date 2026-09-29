@@ -141,3 +141,18 @@ def test_expected_range_needs_history():
     assert analytics.expected_range([100.0]) is None
     assert analytics.expected_range([]) is None
     assert analytics.expected_range([100 + i for i in range(80)], horizon_days=0) is None
+
+
+def test_ema_known_values():
+    # window 3, alpha 0.5: seed = mean(1,2,3) = 2; then 4 -> 3; then 5 -> 4
+    assert analytics.ema([1.0, 2.0, 3.0, 4.0, 5.0], 3) == pytest.approx(4.0)
+
+
+def test_ema_needs_a_full_window():
+    assert analytics.ema([1.0, 2.0], 3) is None
+    assert analytics.ema([1.0, 2.0, 3.0], 0) is None
+
+
+def test_ema_reacts_faster_than_sma():
+    closes = [100.0] * 30 + [110.0] * 5
+    assert analytics.ema(closes, 20) > analytics.sma(closes, 20)

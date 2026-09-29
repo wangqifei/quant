@@ -35,6 +35,20 @@ def sma(closes: list[float], window: int) -> float | None:
     return sum(closes[-window:]) / window
 
 
+def ema(closes: list[float], window: int) -> float | None:
+    """Exponential moving average, seeded with the SMA of the first window.
+
+    Smoothing factor 2 / (window + 1), the convention most charting tools use.
+    """
+    if window <= 0 or len(closes) < window:
+        return None
+    k = 2.0 / (window + 1)
+    value = sum(closes[:window]) / window
+    for close in closes[window:]:
+        value = close * k + value * (1 - k)
+    return value
+
+
 def pct_change(current: float, past: float) -> float | None:
     if past == 0:
         return None
